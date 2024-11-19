@@ -1,8 +1,8 @@
-"""Forward /v1/chat/completions upstream and record the request body.
+"""Classify the outbound request, then decide whether to forward it.
 
-Deliberately dumb for now. The point of this commit is to find out
-whether every tool on this box will actually accept a different base
-URL without complaining, before building anything on top of it.
+No routing yet: confidential means refused, and refused means a 403
+with a readable reason, because an unexplained failure in the middle of
+a pipeline is how a gateway gets routed around.
 """
 import argparse
 import json
@@ -12,22 +12,43 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
+import classify
+
 UPSTREAM = "https://api.openai.com"
 LOG = "calls.jsonl"
 
 
-def record(path, body, status):
+def outbound_text(body):
+    """Everything in a request that will be read by a model."""
+    parts = []
+    for msg in body.get("messages") or []:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for piece in content:
+                if isinstance(piece, dict) and piece.get("text"):
+                    parts.append(piece["text"])
+    if isinstance(body.get("prompt"), str):
+        parts.append(body["prompt"])
+    return "\n".join(parts)
+
+
+def record(entry):
     with open(LOG, "a") as fh:
-        fh.write(json.dumps({
-            "ts": time.time(),
-            "path": path,
-            "status": status,
-            "body": body,
-        }) + "\n")
+        fh.write(json.dumps(entry) + "\n")
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def reply(self, status, obj):
+        payload = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self):
         n = int(self.headers.get("content-length", 0))
@@ -35,19 +56,37 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
-            body = {"__unparsed__": raw.decode("utf-8", "replace")}
+            self.reply(400, {"error": {"message": "airlock: body is "
+                                                  "not json"}})
+            return
+
+        text = outbound_text(body)
+        found = classify.findings(text)
+        tier = classify.tier(text)
+        entry = {"ts": time.time(), "path": self.path, "tier": tier,
+                 "findings": [{"kind": k, "match": v}
+                              for k, v in found]}
+
+        if tier == classify.CONFIDENTIAL:
+            entry["decision"] = "refused"
+            record(entry)
+            self.reply(403, {"error": {
+                "message": "airlock: refused, classified "
+                           + tier + " (" + ", ".join(
+                               sorted({k for k, _ in found})) + ")",
+                "type": "airlock_policy",
+            }})
+            return
 
         r = requests.post(
-            UPSTREAM + self.path,
-            data=raw,
-            headers={
-                "content-type": "application/json",
-                "authorization": "Bearer " + os.environ.get(
-                    "OPENAI_API_KEY", ""),
-            },
-            timeout=180,
-        )
-        record(self.path, body, r.status_code)
+            UPSTREAM + self.path, data=raw,
+            headers={"content-type": "application/json",
+                     "authorization": "Bearer " + os.environ.get(
+                         "OPENAI_API_KEY", "")},
+            timeout=180)
+        entry["decision"] = "forwarded"
+        entry["status"] = r.status_code
+        record(entry)
 
         payload = r.content
         self.send_response(r.status_code)
