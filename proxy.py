@@ -1,9 +1,4 @@
-"""Classify the outbound request, then decide whether to forward it.
-
-No routing yet: confidential means refused, and refused means a 403
-with a readable reason, because an unexplained failure in the middle of
-a pipeline is how a gateway gets routed around.
-"""
+"""Classify the outbound request, then decide whether to forward it."""
 import argparse
 import json
 import os
@@ -13,13 +8,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
 import classify
+import roster
 
 UPSTREAM = "https://api.openai.com"
 LOG = "calls.jsonl"
+ROSTER = []
 
 
 def outbound_text(body):
-    """Everything in a request that will be read by a model."""
     parts = []
     for msg in body.get("messages") or []:
         content = msg.get("content")
@@ -32,6 +28,18 @@ def outbound_text(body):
     if isinstance(body.get("prompt"), str):
         parts.append(body["prompt"])
     return "\n".join(parts)
+
+
+def assess(text):
+    """(tier, reasons). Reasons never contain the matched text."""
+    reasons = [kind for kind, _ in classify.findings(text)]
+    tier = classify.tier(text)
+    for eng in ROSTER:
+        hits = eng.hits(text)
+        if hits:
+            tier = classify.CONFIDENTIAL
+            reasons += [eng.id + ":" + h for h in hits]
+    return tier, sorted(set(reasons))
 
 
 def record(entry):
@@ -60,22 +68,17 @@ class Handler(BaseHTTPRequestHandler):
                                                   "not json"}})
             return
 
-        text = outbound_text(body)
-        found = classify.findings(text)
-        tier = classify.tier(text)
+        tier, reasons = assess(outbound_text(body))
         entry = {"ts": time.time(), "path": self.path, "tier": tier,
-                 "findings": [{"kind": k, "match": v}
-                              for k, v in found]}
+                 "reasons": reasons}
 
         if tier == classify.CONFIDENTIAL:
             entry["decision"] = "refused"
             record(entry)
             self.reply(403, {"error": {
-                "message": "airlock: refused, classified "
-                           + tier + " (" + ", ".join(
-                               sorted({k for k, _ in found})) + ")",
-                "type": "airlock_policy",
-            }})
+                "message": "airlock: refused, classified " + tier
+                           + " (" + ", ".join(reasons) + ")",
+                "type": "airlock_policy"}})
             return
 
         r = requests.post(
@@ -102,7 +105,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8111)
+    ap.add_argument("--roster", default="roster.yaml")
     args = ap.parse_args()
+    global ROSTER
+    if os.path.exists(args.roster):
+        ROSTER = roster.load(args.roster)
     ThreadingHTTPServer(("127.0.0.1", args.port),
                         Handler).serve_forever()
 
