@@ -45,6 +45,14 @@ a route for, the call does not go out. An error at the tool is an
 annoyance. A silent pass-through is the one failure mode that makes the
 whole thing a liability.
 
+There are more ways to be fail-open than to be fail-closed, and they
+are all shaped like an absent input. No roster file. An empty roster
+file. A content part the request reader does not understand, skipped
+instead of refused. A classifier exception caught too broadly. Each of
+those produced a confident `public` on text that was nothing of the
+kind, which is why the default branch of every one of them is now a
+refusal and why the server will not start without a roster.
+
 ## what it is not
 
 It is not a DLP product and it is not a guarantee. I am still a person
