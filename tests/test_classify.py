@@ -1,31 +1,47 @@
-import classify
+from airlock import classify, tiers
 
 
 def test_private_address_is_confidential():
-    assert classify.tier("try 10.40.3.7 next") == classify.CONFIDENTIAL
+    a = classify.classify_text("try 10.40.3.7 next")
+    assert a.tier == tiers.CONFIDENTIAL
+    assert a.reasons == ["net.private-address"]
 
 
-def test_public_address_is_not():
-    assert classify.tier("8.8.8.8 answers") == classify.PUBLIC
+def test_public_text_is_sendable():
+    a = classify.classify_text("what does RFC 5280 say about CRLs")
+    assert classify.is_sendable(a)
 
 
-def test_loopback_is_not_interesting():
-    assert classify.tier("bound on 127.0.0.1:8111") == classify.PUBLIC
+def test_shortname_is_internal():
+    a = classify.classify_text("dc-02 refused the bind")
+    assert a.tier == tiers.INTERNAL
+    assert not classify.is_sendable(a)
 
 
-def test_internal_suffix():
-    t = classify.tier("mail01.hq.corp was unauthenticated")
-    assert t == classify.CONFIDENTIAL
+def test_private_key_block():
+    a = classify.classify_text(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIE...")
+    assert "secrets.private-key" in a.reasons
 
 
-def test_shortname_is_internal_not_confidential():
-    assert classify.tier("dc-02 refused the bind") == classify.INTERNAL
+def test_worst_tier_wins():
+    a = classify.classify_text("web-01 at 10.40.3.7")
+    assert a.tier == tiers.CONFIDENTIAL
 
 
-def test_findings_are_kind_and_value():
-    kinds = {k for k, _ in classify.findings("10.40.3.7 and sql03")}
-    assert kinds == {"private-address", "internal-shortname"}
+def test_unreadable_request_is_undecided():
+    a = classify.classify_request({"messages": "not a list"})
+    assert a.tier == tiers.UNDECIDED
+    assert not classify.is_sendable(a)
 
 
-def test_prose_about_versions_is_not_an_address():
-    assert classify.tier("upgraded to 1.2.3.4-rc1") == classify.PUBLIC
+def test_broken_detector_makes_it_undecided():
+    def boom(_text):
+        raise RuntimeError("nope")
+    a = classify.classify_text("hello", extra=[("boom", boom)])
+    assert a.tier == tiers.UNDECIDED
+
+
+def test_reasons_do_not_contain_matched_values():
+    a = classify.classify_text("10.40.3.7")
+    assert all("10.40" not in r for r in a.reasons)
