@@ -1,13 +1,6 @@
-import textwrap
+import pytest
 
-import roster
-
-
-def write(tmp_path, body):
-    p = tmp_path / "roster.yaml"
-    p.write_text(textwrap.dedent(body))
-    return str(p)
-
+from airlock.detect import roster
 
 ROSTER = """\
 engagements:
@@ -19,28 +12,60 @@ engagements:
 """
 
 
+def write(tmp_path, body=ROSTER):
+    p = tmp_path / "roster.yaml"
+    p.write_text(body)
+    return p
+
+
+def one(tmp_path, body=ROSTER):
+    return roster.load(write(tmp_path, body))[0]
+
+
+def kinds(findings):
+    return sorted({f.kind for f in findings})
+
+
 def test_alias_match(tmp_path):
-    eng = roster.load(write(tmp_path, ROSTER))[0]
-    assert eng.hits("the Halberd kickoff call") == ["client-name"]
+    eng = one(tmp_path)
+    assert kinds(eng.find("the Halberd kickoff")) == \
+        ["roster.client-name"]
 
 
 def test_alias_is_word_bounded(tmp_path):
-    eng = roster.load(write(tmp_path, ROSTER))[0]
-    assert eng.hits("halberdier") == []
+    assert list(one(tmp_path).find("halberdier")) == []
 
 
-def test_domain_match_covers_subdomains(tmp_path):
-    eng = roster.load(write(tmp_path, ROSTER))[0]
-    assert "client-domain" in eng.hits("vpn.halberd-industrial.example")
+def test_domain_covers_subdomains(tmp_path):
+    eng = one(tmp_path)
+    assert "roster.client-domain" in kinds(
+        eng.find("vpn.halberd-industrial.example"))
 
 
-def test_net_match_is_containment_not_text(tmp_path):
-    eng = roster.load(write(tmp_path, ROSTER))[0]
-    assert eng.hits("10.41.200.9") == ["client-net"]
-    assert eng.hits("10.44.0.1") == []
+def test_net_is_containment_not_text(tmp_path):
+    eng = one(tmp_path)
+    assert kinds(eng.find("10.41.200.9")) == ["roster.client-net"]
+    assert list(eng.find("10.44.0.1")) == []
 
 
-def test_hits_never_return_the_matched_value(tmp_path):
-    eng = roster.load(write(tmp_path, ROSTER))[0]
-    for h in eng.hits("Halberd at 10.40.1.1"):
-        assert "10.40" not in h
+def test_finding_reason_names_the_engagement_not_the_value(tmp_path):
+    eng = one(tmp_path)
+    f = next(iter(eng.find("Halberd")))
+    assert f.reason == "halberd:roster.client-name"
+
+
+def test_missing_file_raises(tmp_path):
+    with pytest.raises(roster.RosterError):
+        roster.load(tmp_path / "nope.yaml")
+
+
+def test_empty_roster_raises(tmp_path):
+    with pytest.raises(roster.RosterError):
+        roster.load(write(tmp_path, "engagements: []\n"))
+
+
+def test_bad_net_raises(tmp_path):
+    with pytest.raises(roster.RosterError):
+        roster.load(write(tmp_path, "engagements:\n"
+                                    "  - id: x\n"
+                                    "    nets: [not-a-net]\n"))
