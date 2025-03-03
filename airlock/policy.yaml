@@ -1,0 +1,47 @@
+# Default policy. Copy to ~/.config/airlock/policy.yaml and edit.
+#
+# Reading order: a tier maps to a list of candidate routes, tried top
+# to bottom. The first route whose requirements can be satisfied wins.
+# An empty list means refuse.
+version: 1
+
+routes:
+  public:
+    - backend: hosted
+    - backend: local            # when the provider is unreachable
+
+  internal:
+    # Hosted is allowed for internal material, but only once the
+    # identifying strings are gone. `require: [redacted]` is not
+    # advice; the router will not select this route unless redaction
+    # actually succeeded for every finding.
+    - backend: hosted
+      require: [redacted]
+    - backend: local
+
+  client-confidential:
+    - backend: local
+
+  # Not a tier: the classifier's "I do not know". No route exists for
+  # it and none can be written -- see the loader.
+  undecided: []
+
+backends:
+  hosted:
+    kind: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    models:
+      default: gpt-4o-mini
+
+  local:
+    kind: openai
+    base_url: http://127.0.0.1:8080/v1
+    api_key_env: null
+    models:
+      default: qwen2.5-14b-instruct
+
+limits:
+  # Refuse rather than truncate. A silently shortened prompt produces
+  # a confidently wrong answer about a client system.
+  max_outbound_chars: 400000
