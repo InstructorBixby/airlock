@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airlock"
+version = "0.1.0.dev0"
+description = "Policy gateway for model calls: classify, redact, route local or hosted, log everything"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "c01n31pan1c", email = "panic@c01n31.net"}]
+dependencies = ["requests>=2.31", "pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+[project.scripts]
+airlock = "airlock.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["airlock*"]
+
+[tool.setuptools.package-data]
+airlock = ["policy/*.yaml", "schema/*.json"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
