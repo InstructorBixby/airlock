@@ -17,13 +17,13 @@ from pathlib import Path
 import yaml
 
 from airlock import tiers
+from airlock.cost import Price
 
 
 class PolicyError(Exception):
     pass
 
 
-#: Requirements a route may declare.
 KNOWN_REQUIREMENTS = {"redacted", "local", "available"}
 
 
@@ -45,6 +45,7 @@ class Backend:
     base_url: str
     api_key_env: str | None = None
     models: dict = field(default_factory=dict)
+    prices: dict = field(default_factory=dict)
 
     @property
     def is_local(self) -> bool:
@@ -79,6 +80,10 @@ class Policy:
         except KeyError as exc:
             raise PolicyError(f"no backend named {name!r}") from exc
 
+    @property
+    def max_outbound_chars(self) -> int:
+        return int(self.limits.get("max_outbound_chars") or 0)
+
 
 def _parse_backends(raw: dict) -> dict:
     out = {}
@@ -89,10 +94,18 @@ def _parse_backends(raw: dict) -> dict:
         if missing:
             raise PolicyError(f"backend {name!r} missing "
                               f"{sorted(missing)}")
+        prices = {}
+        for model, p in (body.get("prices") or {}).items():
+            parsed = Price.from_raw(p)
+            if parsed is None:
+                raise PolicyError(f"backend {name!r}: price for "
+                                  f"{model!r} is empty")
+            prices[model] = parsed
         out[name] = Backend(
             name=name, kind=body["kind"], base_url=body["base_url"],
             api_key_env=body.get("api_key_env"),
             models=dict(body.get("models") or {}),
+            prices=prices,
         )
     if not out:
         raise PolicyError("policy declares no backends")
@@ -123,7 +136,6 @@ def _parse_routes(raw: dict, backends: dict) -> dict:
 
 
 def _check_invariants(pol: Policy) -> None:
-    # The one rule the file cannot be allowed to express.
     for route in pol.candidates(tiers.CONFIDENTIAL):
         be = pol.backend(route.backend)
         if not be.is_local:

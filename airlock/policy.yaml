@@ -33,6 +33,10 @@ backends:
     api_key_env: OPENAI_API_KEY
     models:
       default: gpt-4o-mini
+    # Dollars per million tokens. Omit a model and its calls are
+    # recorded with no cost, not with a cost of zero.
+    prices:
+      gpt-4o-mini: {prompt: 0.15, completion: 0.60}
 
   local:
     kind: openai
@@ -40,6 +44,8 @@ backends:
     api_key_env: null
     models:
       default: qwen2.5-14b-instruct
+    prices:
+      default: {prompt: 0.0, completion: 0.0}
 
 limits:
   # Refuse rather than truncate. A silently shortened prompt produces

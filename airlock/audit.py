@@ -57,12 +57,22 @@ class Record:
     request_sha256: str = ""
     status: int | None = None
     tokens: dict = field(default_factory=dict)
+    #: None means no price was declared for this model, which is not
+    #: the same as a cost of zero. Both are meaningful; conflating
+    #: them makes a monthly total quietly wrong.
+    cost_usd: float | None = None
     refusal: str = ""
 
     def to_json(self) -> dict:
         out = {"v": SCHEMA}
-        out.update({k: v for k, v in asdict(self).items()
-                    if v not in (None, "", [], {})})
+        skip = (None, "", [], {})
+        for k, v in asdict(self).items():
+            if k == "cost_usd":
+                if v is not None:
+                    out[k] = v
+                continue
+            if v not in skip:
+                out[k] = v
         return out
 
 
