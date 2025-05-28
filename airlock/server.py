@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from airlock import audit, backends, classify, route, tiers
+from airlock import audit, backends, classify, cost, route, tiers
 
 
 class Gateway:
@@ -31,18 +31,25 @@ class Gateway:
         rec = audit.Record(id=audit.call_id(), ts=audit.now(),
                            path=path,
                            request_sha256=audit.body_digest(raw))
+
+        def refuse(status, why, tier=tiers.UNDECIDED):
+            rec.tier = rec.tier or tier
+            rec.refusal = why
+            self.log.write(rec)
+            return status, _error(why, rec.id)
+
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
-            rec.tier = tiers.UNDECIDED
-            rec.refusal = "request body is not json"
-            self.log.write(rec)
-            return 400, _error(rec.refusal, rec.id)
+            return refuse(400, "request body is not json")
         if not isinstance(body, dict):
-            rec.tier = tiers.UNDECIDED
-            rec.refusal = "request body is not an object"
-            self.log.write(rec)
-            return 400, _error(rec.refusal, rec.id)
+            return refuse(400, "request body is not an object")
+
+        cap = self.policy.max_outbound_chars
+        if cap and len(raw) > cap:
+            return refuse(413, f"request is {len(raw)} bytes, over the "
+                               f"{cap} byte outbound limit; refusing "
+                               f"rather than truncating")
 
         assessment = classify.classify_request(body, extra=self.extra)
         rec.tier = assessment.tier
@@ -51,9 +58,7 @@ class Gateway:
 
         decision = route.decide(self.policy, assessment)
         if not decision.allowed:
-            rec.refusal = decision.refusal
-            self.log.write(rec)
-            return 403, _error(decision.refusal, rec.id)
+            return refuse(403, decision.refusal, assessment.tier)
 
         be = self.policy.backend(decision.backend)
         sent = dict(body)
@@ -65,13 +70,12 @@ class Gateway:
         try:
             out = backends.call(be, path, sent)
         except backends.BackendError as exc:
-            rec.refusal = str(exc)
             rec.status = exc.status
-            self.log.write(rec)
-            return 502, _error(f"backend failed: {exc}", rec.id)
+            return refuse(502, f"backend failed: {exc}", rec.tier)
 
         rec.status = 200
         rec.tokens = _usage(out)
+        rec.cost_usd = cost.estimate(be.prices, rec.model, rec.tokens)
         self.log.write(rec)
         return 200, out
 
@@ -94,8 +98,6 @@ def make_handler(gw: Gateway):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         server_version = "airlock"
-        # Hiding the Python version is not a security measure, it is
-        # so a provider SDK does not try to be clever about it.
         sys_version = ""
 
         def _send(self, status: int, obj: dict) -> None:
@@ -128,5 +130,4 @@ def make_handler(gw: Gateway):
 
 
 def serve(gw: Gateway, host: str = "127.0.0.1", port: int = 8111):
-    httpd = ThreadingHTTPServer((host, port), make_handler(gw))
-    return httpd
+    return ThreadingHTTPServer((host, port), make_handler(gw))
