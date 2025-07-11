@@ -53,7 +53,10 @@ class Record:
     decision: str = "refuse"
     backend: str | None = None
     model: str | None = None
+    #: strings replaced on the way out
     redactions: int = 0
+    #: placeholders replaced on the way back in
+    restored: int = 0
     request_sha256: str = ""
     status: int | None = None
     tokens: dict = field(default_factory=dict)

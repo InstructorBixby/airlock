@@ -2,28 +2,26 @@
 
 Everything on this box that talks to a model already honours
 `OPENAI_BASE_URL`, so being that URL is the entire adoption strategy.
-No tool gets modified, no wrapper gets written, and anything that
-forgets to use the gateway is a thing I can notice rather than a thing
-I have to remember.
 
-Only the handlers live here. Classification, policy, routing and the
-audit record are all somewhere else, and this module's job is to make
-sure every request passes through all four of them exactly once.
+Only the handlers live here. Classification, policy, routing, redaction
+and the audit record are all somewhere else, and this module's job is
+to make sure every request passes through all of them exactly once, in
+that order, with no path that skips one.
 """
 from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from airlock import audit, backends, classify, cost, route, tiers
+from airlock import (audit, backends, classify, cost, redact, route,
+                     tiers)
 
 
 class Gateway:
-    """Everything one process needs, assembled once at startup."""
-
-    def __init__(self, policy, log, roster_detector=None):
+    def __init__(self, policy, log, roster_detector=None, scrubmap=None):
         self.policy = policy
         self.log = log
+        self.scrubmap = scrubmap
         self.extra = ([("roster", roster_detector)]
                       if roster_detector else [])
 
@@ -56,16 +54,31 @@ class Gateway:
         rec.reasons = assessment.reasons
         rec.engagements = assessment.engagements
 
-        decision = route.decide(self.policy, assessment)
+        # Redaction is attempted before routing, because whether it
+        # succeeded is an input to the routing decision rather than a
+        # consequence of it.
+        redaction = None
+        if (assessment.findings and self.scrubmap is not None
+                and assessment.tier != tiers.UNDECIDED):
+            redaction = redact.apply(body, assessment.findings,
+                                     self.scrubmap)
+
+        decision = route.decide(
+            self.policy, assessment,
+            redaction_complete=bool(redaction and redaction.complete))
         if not decision.allowed:
             return refuse(403, decision.refusal, assessment.tier)
 
         be = self.policy.backend(decision.backend)
-        sent = dict(body)
+        use_redacted = (redaction is not None
+                        and "redacted" in decision.route.require)
+        sent = dict(redaction.body if use_redacted else body)
         sent["model"] = be.model_for(body.get("model"))
         rec.decision = "allow"
         rec.backend = be.name
         rec.model = sent["model"]
+        rec.redactions = (redaction.replacements
+                          if use_redacted else 0)
 
         try:
             out = backends.call(be, path, sent)
@@ -73,7 +86,13 @@ class Gateway:
             rec.status = exc.status
             return refuse(502, f"backend failed: {exc}", rec.tier)
 
+        restored = 0
+        if use_redacted:
+            out, restored = redact.reverse(out, self.scrubmap)
+            if self.scrubmap.dirty:
+                self.scrubmap.save()
         rec.status = 200
+        rec.restored = restored
         rec.tokens = _usage(out)
         rec.cost_usd = cost.estimate(be.prices, rec.model, rec.tokens)
         self.log.write(rec)
