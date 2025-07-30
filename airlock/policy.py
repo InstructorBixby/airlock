@@ -10,6 +10,7 @@ here is a configuration that would have been fail-open, so there is no
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -70,6 +71,9 @@ class Policy:
     backends: dict = field(default_factory=dict)
     limits: dict = field(default_factory=dict)
     source: str = "<memory>"
+    #: hash of the file as loaded, written into every audit record so a
+    #: decision stays interpretable after the policy is edited
+    digest: str = ""
 
     def candidates(self, tier: str) -> list[Route]:
         return list(self.routes.get(tier, ()))
@@ -151,21 +155,27 @@ def _check_invariants(pol: Policy) -> None:
                               f"silence is not a default")
 
 
-def load(path) -> Policy:
-    p = Path(path)
-    if not p.exists():
-        raise PolicyError(f"no policy at {p}")
-    raw = yaml.safe_load(p.read_text()) or {}
+def loads(text: str, *, source: str = "<string>") -> Policy:
+    raw = yaml.safe_load(text) or {}
     if raw.get("version") != 1:
-        raise PolicyError(f"{p}: unsupported policy version "
+        raise PolicyError(f"{source}: unsupported policy version "
                           f"{raw.get('version')!r}")
     backends = _parse_backends(raw.get("backends"))
     pol = Policy(routes=_parse_routes(raw.get("routes"), backends),
                  backends=backends,
                  limits=dict(raw.get("limits") or {}),
-                 source=str(p))
+                 source=source,
+                 digest="sha256:" + hashlib.sha256(
+                     text.encode("utf-8")).hexdigest())
     _check_invariants(pol)
     return pol
+
+
+def load(path) -> Policy:
+    p = Path(path)
+    if not p.exists():
+        raise PolicyError(f"no policy at {p}")
+    return loads(p.read_text(), source=str(p))
 
 
 def default_path() -> Path:
