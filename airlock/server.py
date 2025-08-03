@@ -28,7 +28,8 @@ class Gateway:
     def handle(self, path: str, raw: bytes) -> tuple[int, dict]:
         rec = audit.Record(id=audit.call_id(), ts=audit.now(),
                            path=path,
-                           request_sha256=audit.body_digest(raw))
+                           request_sha256=audit.body_digest(raw),
+                           policy_sha256=self.policy.digest)
 
         def refuse(status, why, tier=tiers.UNDECIDED):
             rec.tier = rec.tier or tier
@@ -54,9 +55,6 @@ class Gateway:
         rec.reasons = assessment.reasons
         rec.engagements = assessment.engagements
 
-        # Redaction is attempted before routing, because whether it
-        # succeeded is an input to the routing decision rather than a
-        # consequence of it.
         redaction = None
         if (assessment.findings and self.scrubmap is not None
                 and assessment.tier != tiers.UNDECIDED):
@@ -66,6 +64,7 @@ class Gateway:
         decision = route.decide(
             self.policy, assessment,
             redaction_complete=bool(redaction and redaction.complete))
+        rec.considered = [c.line() for c in decision.considered]
         if not decision.allowed:
             return refuse(403, decision.refusal, assessment.tier)
 
@@ -77,8 +76,7 @@ class Gateway:
         rec.decision = "allow"
         rec.backend = be.name
         rec.model = sent["model"]
-        rec.redactions = (redaction.replacements
-                          if use_redacted else 0)
+        rec.redactions = redaction.replacements if use_redacted else 0
 
         try:
             out = backends.call(be, path, sent)
