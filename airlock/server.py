@@ -18,18 +18,32 @@ from airlock import (audit, backends, classify, cost, redact, route,
 
 
 class Gateway:
-    def __init__(self, policy, log, roster_detector=None, scrubmap=None):
+    """Everything one process needs, assembled once at startup.
+
+    `detectors` is a list of (name, callable) because the set in play
+    depends on which engagement is loaded: the roster always, a scope
+    file and the engagement's own terms when there is one.
+    """
+
+    def __init__(self, policy, log, detectors=(), scrubmap=None,
+                 engagement=None):
         self.policy = policy
         self.log = log
+        self.detectors = list(detectors)
         self.scrubmap = scrubmap
-        self.extra = ([("roster", roster_detector)]
-                      if roster_detector else [])
+        self.engagement = engagement
+
+    @property
+    def deny_hosted(self) -> bool:
+        return bool(self.engagement and self.engagement.deny_hosted)
 
     def handle(self, path: str, raw: bytes) -> tuple[int, dict]:
         rec = audit.Record(id=audit.call_id(), ts=audit.now(),
                            path=path,
                            request_sha256=audit.body_digest(raw),
                            policy_sha256=self.policy.digest)
+        if self.engagement is not None:
+            rec.engagements = [self.engagement.id]
 
         def refuse(status, why, tier=tiers.UNDECIDED):
             rec.tier = rec.tier or tier
@@ -50,10 +64,12 @@ class Gateway:
                                f"{cap} byte outbound limit; refusing "
                                f"rather than truncating")
 
-        assessment = classify.classify_request(body, extra=self.extra)
+        assessment = classify.classify_request(body,
+                                               extra=self.detectors)
         rec.tier = assessment.tier
         rec.reasons = assessment.reasons
-        rec.engagements = assessment.engagements
+        rec.engagements = sorted(set(rec.engagements)
+                                 | set(assessment.engagements))
 
         redaction = None
         if (assessment.findings and self.scrubmap is not None
@@ -63,7 +79,8 @@ class Gateway:
 
         decision = route.decide(
             self.policy, assessment,
-            redaction_complete=bool(redaction and redaction.complete))
+            redaction_complete=bool(redaction and redaction.complete),
+            deny_hosted=self.deny_hosted)
         rec.considered = [c.line() for c in decision.considered]
         if not decision.allowed:
             return refuse(403, decision.refusal, assessment.tier)

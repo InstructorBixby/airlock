@@ -4,10 +4,10 @@ The only part of the classifier that knows real client names, which is
 why the roster file lives outside the repository and why a Finding from
 here records the engagement id rather than the string that matched.
 
-Loading is module-level and explicit: `load(path)` installs a detector
-bound to that roster. Nothing here reads a default path on import,
-because a detector that silently matches nothing is the fail-open shape
-this whole thing exists to avoid.
+Loading is explicit: `load(path)` reads a file, `detector(engagements)`
+binds a detector to what was read. Nothing here reads a default path on
+import, because a detector that silently matches nothing is the
+fail-open shape this whole thing exists to avoid.
 """
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class Engagement:
                           for d in (raw.get("domains") or [])),
             nets=tuple(nets),
         )
-        eng._alias_re = _alias_re(eng.aliases)
+        eng._alias_re = alias_re(eng.aliases)
         return eng
 
     def find(self, text: str) -> Iterator[Finding]:
@@ -85,7 +85,7 @@ class Engagement:
                               span=m.span())
 
 
-def _alias_re(aliases):
+def alias_re(aliases):
     if not aliases:
         return None
     parts = sorted((re.escape(a) for a in aliases), key=len,
@@ -109,4 +109,23 @@ def detector(engagements):
     def fn(text: str) -> Iterator[Finding]:
         for eng in engagements:
             yield from eng.find(text)
+    return fn
+
+
+def terms_detector(terms, engagement: str):
+    """Engagement-specific strings that are not the client's name.
+
+    A product codename, a ticket prefix, the brand of an acquired
+    subsidiary. These belong to one engagement and would be noise in
+    the shared roster.
+    """
+    rx = alias_re(tuple(terms))
+    if rx is None:
+        return lambda text: iter(())
+
+    def fn(text: str) -> Iterator[Finding]:
+        for m in rx.finditer(text):
+            yield Finding("engagement.term", m.group(0),
+                          tiers.CONFIDENTIAL, engagement=engagement,
+                          span=m.span())
     return fn

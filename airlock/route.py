@@ -31,7 +31,7 @@ class Decision:
     tier: str
     allowed: bool = False
     route: Route | None = None
-    considered: list[Considered] = field(default_factory=list)
+    considered: list = field(default_factory=list)
     refusal: str = ""
 
     @property
@@ -53,7 +53,8 @@ class Decision:
 
 def decide(pol: Policy, assessment: Assessment, *,
            redaction_complete: bool = False,
-           check_available: bool = True) -> Decision:
+           check_available: bool = True,
+           deny_hosted: bool = False) -> Decision:
     tier = assessment.tier
     dec = Decision(tier=tier)
 
@@ -70,6 +71,8 @@ def decide(pol: Policy, assessment: Assessment, *,
     for route in candidates:
         be = pol.backend(route.backend)
         unmet = []
+        if deny_hosted and not be.is_local:
+            unmet.append("engagement denies hosted")
         if "redacted" in route.require and not redaction_complete:
             unmet.append("redaction incomplete")
         if "local" in route.require and not be.is_local:
@@ -81,7 +84,8 @@ def decide(pol: Policy, assessment: Assessment, *,
             dec.considered.append(
                 Considered(route, False, "; ".join(unmet)))
             continue
-        dec.considered.append(Considered(route, True, "requirements met"))
+        dec.considered.append(Considered(route, True,
+                                         "requirements met"))
         dec.allowed = True
         dec.route = route
         return dec
