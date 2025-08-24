@@ -12,29 +12,55 @@ import json
 import sys
 from pathlib import Path
 
-from airlock import (__version__, audit, classify, policy, route,
-                     scrubmap, server)
+from airlock import (__version__, audit, classify, engagement, policy,
+                     route, scrubmap, server)
 from airlock.detect import roster as roster_mod
+from airlock.detect import scope as scope_mod
 
 
-def _load(args):
+def _engagement(args):
+    if not args.engagement:
+        return None
+    root = Path(args.engagements) / args.engagement
+    return engagement.load(root)
+
+
+def _assemble(args):
+    """Policy, detectors and map for this invocation."""
     pol = policy.load(args.policy)
+    extra = []
     engagements = roster_mod.load(args.roster)
-    return pol, roster_mod.detector(engagements), engagements
+    extra.append(("roster", roster_mod.detector(engagements)))
+    eng = _engagement(args)
+    smap = None
+    if eng is not None:
+        if eng.scope is not None:
+            extra.append(("scope", scope_mod.from_file(eng.scope,
+                                                       eng.id)))
+        if eng.extra_terms:
+            extra.append(("terms", roster_mod.terms_detector(
+                eng.extra_terms, eng.id)))
+        smap = scrubmap.load(
+            eng.map_path, engagement=eng.id,
+            key=scrubmap.engagement_key(eng.key_path))
+    elif args.map:
+        smap = scrubmap.load(args.map)
+    return pol, extra, smap, eng
 
 
 def cmd_serve(args) -> int:
-    pol, detector, engagements = _load(args)
+    pol, extra, smap, eng = _assemble(args)
     log = audit.Log(args.log)
-    smap = scrubmap.load(args.map) if args.map else None
-    gw = server.Gateway(pol, log, roster_detector=detector,
-                        scrubmap=smap)
+    gw = server.Gateway(pol, log, detectors=extra, scrubmap=smap,
+                        engagement=eng)
     httpd = server.serve(gw, args.host, args.port)
+    label = f", engagement {eng.id}" if eng else ""
     print(f"airlock on http://{args.host}:{args.port}/v1 "
-          f"({len(engagements)} engagement(s), policy {pol.source})",
-          file=sys.stderr)
+          f"(policy {pol.source}{label})", file=sys.stderr)
     print(f"  export OPENAI_BASE_URL=http://{args.host}:{args.port}/v1",
           file=sys.stderr)
+    if eng is not None and eng.deny_hosted:
+        print("  hosted is denied for this engagement", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -43,11 +69,10 @@ def cmd_serve(args) -> int:
 
 
 def cmd_check(args) -> int:
-    pol, detector, _ = _load(args)
+    pol, extra, _, _ = _assemble(args)
     text = (sys.stdin.read() if args.file == "-"
             else Path(args.file).read_text())
-    assessment = classify.classify_text(text,
-                                        extra=[("roster", detector)])
+    assessment = classify.classify_text(text, extra=extra)
     decision = route.decide(pol, assessment, check_available=False)
     if args.json:
         print(json.dumps({"assessment": assessment.to_json(),
@@ -75,6 +100,25 @@ def cmd_why(args) -> int:
     return 0
 
 
+def cmd_engagements(args) -> int:
+    found = engagement.discover(args.engagements)
+    if not found:
+        print(f"no engagements under {args.engagements}")
+        return 1
+    for eng in found.values():
+        bits = []
+        if eng.scope is not None:
+            bits.append("scope")
+        if eng.extra_terms:
+            bits.append(f"{len(eng.extra_terms)} term(s)")
+        if eng.max_cost_usd is not None:
+            bits.append(f"ceiling ${eng.max_cost_usd:.2f}")
+        if eng.deny_hosted:
+            bits.append("hosted denied")
+        print(f"{eng.id:24} {', '.join(bits) or '-'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="airlock",
@@ -84,26 +128,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy", default=str(policy.default_path()))
     p.add_argument("--roster", default="roster.yaml")
     p.add_argument("--log", default=str(audit.default_path()))
+    p.add_argument("--engagements", default="engagements",
+                   help="directory holding one subdirectory per "
+                        "engagement")
+    p.add_argument("-e", "--engagement",
+                   help="load this engagement's profile, scope and map")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("serve", help="run the endpoint")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8111)
-    s.add_argument("--map", help="scrubkit mapping, for reversible "
-                                 "redaction")
+    s.add_argument("--map", help="scrubkit mapping, when not using -e")
     s.set_defaults(fn=cmd_serve)
 
     c = sub.add_parser("check", help="classify a file and print the "
                                      "routing decision")
     c.add_argument("file", help="path, or - for stdin")
     c.add_argument("--json", action="store_true")
-    c.add_argument("--why", action="store_true",
-                   help="print every route considered")
+    c.add_argument("--why", action="store_true")
+    c.add_argument("--map")
     c.set_defaults(fn=cmd_check)
 
     w = sub.add_parser("why", help="explain a call from the audit log")
     w.add_argument("call", help="call id, or a unique prefix of one")
     w.set_defaults(fn=cmd_why)
+
+    sub.add_parser("engagements",
+                   help="list the engagement profiles found"
+                   ).set_defaults(fn=cmd_engagements)
     return p
 
 
@@ -112,6 +164,7 @@ def main(argv=None) -> int:
     try:
         return args.fn(args)
     except (policy.PolicyError, roster_mod.RosterError,
+            scope_mod.ScopeError, engagement.EngagementError,
             scrubmap.MapError) as exc:
         print(f"airlock: {exc}", file=sys.stderr)
         return 2
