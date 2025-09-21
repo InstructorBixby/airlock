@@ -1,9 +1,12 @@
 # Engagement roster. The real one is gitignored.
 #
-# Every current and recent engagement, with the strings that identify
-# it. `aliases` is for the names that show up in evidence but not on
-# the statement of work: a product name, an acquired subsidiary, the
-# internal project codename somebody uses in ticket titles.
+# `aliases` are unambiguous identifiers: a full client name, a ticker,
+# a project code with a prefix that occurs nowhere else.
+#
+# `weak_aliases` are the ones that are also ordinary words. On their
+# own they produce an `internal` finding (redact and send); together
+# with any other finding for the same engagement they are corroborated
+# and the call is confidential. See docs/aliases.md.
 #
 # `domains` is matched on suffix, so one entry covers every host under
 # it. `nets` is matched by containment, not by text.
@@ -11,18 +14,21 @@
 engagements:
   - id: halberd
     client: Halberd Industrial
-    aliases: [halberd, halberd-ind, HBRD]
+    aliases: [halberd-industrial, HBRD]
+    weak_aliases: [halberd]
     domains: [halberd-industrial.example, hbrd-internal.example]
     nets: [10.40.0.0/14, 192.168.70.0/24]
 
   - id: northwind-api
     client: Northwind Logistics
-    aliases: [northwind, nwl, "project kestrel"]
+    aliases: [northwind-logistics, NWL-]
+    weak_aliases: [northwind]
     domains: [northwind-logistics.example]
     nets: [172.19.0.0/16]
 
   - id: vantage-retest
     client: Vantage Mutual
-    aliases: [vantage, vantage-mutual, VMI]
+    aliases: [vantage-mutual, VMI-]
+    weak_aliases: [vantage]
     domains: [vantagemutual.example]
     nets: [10.9.0.0/16]
