@@ -4,10 +4,9 @@ The only part of the classifier that knows real client names, which is
 why the roster file lives outside the repository and why a Finding from
 here records the engagement id rather than the string that matched.
 
-Loading is explicit: `load(path)` reads a file, `detector(engagements)`
-binds a detector to what was read. Nothing here reads a default path on
-import, because a detector that silently matches nothing is the
-fail-open shape this whole thing exists to avoid.
+Two alias lists, not one. See docs/aliases.md: an alias that is also an
+ordinary word cannot be treated as proof on its own without making the
+gateway useless, and cannot be dropped without making it leaky.
 """
 from __future__ import annotations
 
@@ -24,6 +23,9 @@ from airlock.model import Finding
 
 IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
+#: Kinds that are corroboration-dependent rather than conclusive.
+WEAK_KINDS = {"roster.weak-name"}
+
 
 class RosterError(Exception):
     pass
@@ -34,9 +36,11 @@ class Engagement:
     id: str
     client: str = ""
     aliases: tuple[str, ...] = ()
+    weak_aliases: tuple[str, ...] = ()
     domains: tuple[str, ...] = ()
     nets: tuple = ()
     _alias_re: object = field(default=None, repr=False)
+    _weak_re: object = field(default=None, repr=False)
 
     @classmethod
     def from_raw(cls, raw: dict) -> "Engagement":
@@ -48,15 +52,23 @@ class Engagement:
                 nets.append(ipaddress.ip_network(n, strict=False))
             except ValueError as exc:
                 raise RosterError(f"{raw['id']}: bad net {n!r}") from exc
+        strong = tuple(a for a in (raw.get("aliases") or []) if a)
+        weak = tuple(a for a in (raw.get("weak_aliases") or []) if a)
+        overlap = {a.lower() for a in strong} & {a.lower() for a in weak}
+        if overlap:
+            raise RosterError(f"{raw['id']}: {sorted(overlap)} listed "
+                              f"as both strong and weak")
         eng = cls(
             id=raw["id"],
             client=raw.get("client", raw["id"]),
-            aliases=tuple(a for a in (raw.get("aliases") or []) if a),
+            aliases=strong,
+            weak_aliases=weak,
             domains=tuple(d.lower().lstrip(".")
                           for d in (raw.get("domains") or [])),
             nets=tuple(nets),
         )
-        eng._alias_re = alias_re(eng.aliases)
+        eng._alias_re = alias_re(strong)
+        eng._weak_re = alias_re(weak)
         return eng
 
     def find(self, text: str) -> Iterator[Finding]:
@@ -64,6 +76,11 @@ class Engagement:
             for m in self._alias_re.finditer(text):
                 yield Finding("roster.client-name", m.group(0),
                               tiers.CONFIDENTIAL, engagement=self.id,
+                              span=m.span())
+        if self._weak_re is not None:
+            for m in self._weak_re.finditer(text):
+                yield Finding("roster.weak-name", m.group(0),
+                              tiers.INTERNAL, engagement=self.id,
                               span=m.span())
         low = text.lower()
         for d in self.domains:
@@ -105,7 +122,6 @@ def load(path) -> list[Engagement]:
 
 
 def detector(engagements):
-    """A detector closed over a loaded roster."""
     def fn(text: str) -> Iterator[Finding]:
         for eng in engagements:
             yield from eng.find(text)

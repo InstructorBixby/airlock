@@ -41,9 +41,11 @@ class Finding:
 @dataclass
 class Assessment:
     tier: str = tiers.PUBLIC
-    findings: list[Finding] = field(default_factory=list)
+    findings: list = field(default_factory=list)
     #: set when the classifier could not reach a confident answer
     undecided_because: str | None = None
+    #: one readable line per weak finding that something else backed up
+    corroborated: list = field(default_factory=list)
 
     @property
     def reasons(self) -> list[str]:
@@ -66,6 +68,8 @@ class Assessment:
         out = {"tier": self.tier, "reasons": self.reasons}
         if self.engagements:
             out["engagements"] = self.engagements
+        if self.corroborated:
+            out["corroborated"] = list(self.corroborated)
         if self.undecided_because:
             out["undecided_because"] = self.undecided_because
         return out
