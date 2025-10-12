@@ -26,7 +26,7 @@ def register(name: str):
 
 
 def load_builtins() -> None:
-    from airlock.detect import net, secrets  # noqa: F401
+    from airlock.detect import encoded, net, secrets  # noqa: F401
 
 
 def all_detectors() -> dict:
