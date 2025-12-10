@@ -15,7 +15,7 @@ import json
 import requests
 
 from airlock import sse
-from airlock.backends import BackendError, Unavailable, _headers
+from airlock.backends import BackendError, Unavailable, headers
 from airlock.unredact import Reverser
 
 
@@ -25,17 +25,17 @@ def wants_stream(body: dict) -> bool:
 
 def relay(be, path: str, body: dict, *, reverser: Reverser | None = None,
           timeout: float = 600.0):
-    """Yield raw bytes to write back to the client, in order.
+    """Yield (bytes to write back, info) pairs, in order.
 
-    Also returns usage via `relay.usage` on the generator's `info`
-    dict, because a streamed response carries token counts in the final
-    chunk and the audit record needs them.
+    `info` is the same mutable dict every time: a streamed response
+    carries its token counts in the last chunk, so the audit record
+    cannot be finalised until the generator is exhausted.
     """
     url = be.base_url.rstrip("/") + "/" + path.lstrip("/")
     info = {"usage": {}, "restored": 0, "events": 0}
     try:
         resp = requests.post(url, data=json.dumps(body).encode(),
-                             headers={**_headers(be),
+                             headers={**headers(be),
                                       "accept": "text/event-stream"},
                              stream=True, timeout=timeout)
     except requests.RequestException as exc:
@@ -61,7 +61,7 @@ def relay(be, path: str, body: dict, *, reverser: Reverser | None = None,
                 if obj.get("usage"):
                     info["usage"] = obj["usage"]
                 if reverser is not None:
-                    _reverse_deltas(obj, reverser, info)
+                    _reverse_deltas(obj, reverser)
                 data = json.dumps(obj)
         return sse.Event(data=data, event=ev.event, id=ev.id,
                          retry=ev.retry,
@@ -78,14 +78,13 @@ def relay(be, path: str, body: dict, *, reverser: Reverser | None = None,
     if reverser is not None:
         rest = reverser.flush()
         if rest:
-            info["restored"] = reverser.count
             yield sse.Event(data=json.dumps({"choices": [
                 {"index": 0, "delta": {"content": rest}}]})).render(), \
                 info
-    info["restored"] = reverser.count if reverser else 0
+        info["restored"] = reverser.count
 
 
-def _reverse_deltas(obj: dict, reverser: Reverser, info: dict) -> None:
+def _reverse_deltas(obj: dict, reverser: Reverser) -> None:
     for choice in obj.get("choices") or []:
         delta = choice.get("delta") or {}
         if isinstance(delta.get("content"), str):

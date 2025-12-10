@@ -6,7 +6,8 @@ Everything on this box that talks to a model already honours
 Only the handlers live here. Classification, policy, routing, redaction
 and the audit record are all somewhere else, and this module's job is
 to make sure every request passes through all of them exactly once, in
-that order, with no path that skips one.
+that order, with no path that skips one -- including the streaming
+path, which shares `decide` and differs only after it.
 """
 from __future__ import annotations
 
@@ -14,16 +15,19 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from airlock import (audit, backends, classify, cost, redact, route,
-                     tiers)
+                     streaming, tiers)
+from airlock.unredact import Reverser
+
+
+class Refused(Exception):
+    def __init__(self, status, why):
+        super().__init__(why)
+        self.status = status
+        self.why = why
 
 
 class Gateway:
-    """Everything one process needs, assembled once at startup.
-
-    `detectors` is a list of (name, callable) because the set in play
-    depends on which engagement is loaded: the roster always, a scope
-    file and the engagement's own terms when there is one.
-    """
+    """Everything one process needs, assembled once at startup."""
 
     def __init__(self, policy, log, detectors=(), scrubmap=None,
                  engagement=None):
@@ -37,7 +41,10 @@ class Gateway:
     def deny_hosted(self) -> bool:
         return bool(self.engagement and self.engagement.deny_hosted)
 
-    def handle(self, path: str, raw: bytes) -> tuple[int, dict]:
+    # -- the shared decision ---------------------------------------
+    def prepare(self, path: str, raw: bytes):
+        """Classify, route, redact. Returns (record, backend, body,
+        reverser) or raises Refused."""
         rec = audit.Record(id=audit.call_id(), ts=audit.now(),
                            path=path,
                            request_sha256=audit.body_digest(raw),
@@ -49,20 +56,20 @@ class Gateway:
             rec.tier = rec.tier or tier
             rec.refusal = why
             self.log.write(rec)
-            return status, _error(why, rec.id)
+            raise Refused(status, why)
 
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
-            return refuse(400, "request body is not json")
+            refuse(400, "request body is not json")
         if not isinstance(body, dict):
-            return refuse(400, "request body is not an object")
+            refuse(400, "request body is not an object")
 
         cap = self.policy.max_outbound_chars
         if cap and len(raw) > cap:
-            return refuse(413, f"request is {len(raw)} bytes, over the "
-                               f"{cap} byte outbound limit; refusing "
-                               f"rather than truncating")
+            refuse(413, f"request is {len(raw)} bytes, over the {cap} "
+                        f"byte outbound limit; refusing rather than "
+                        f"truncating")
 
         assessment = classify.classify_request(body,
                                                extra=self.detectors)
@@ -83,7 +90,7 @@ class Gateway:
             deny_hosted=self.deny_hosted)
         rec.considered = [c.line() for c in decision.considered]
         if not decision.allowed:
-            return refuse(403, decision.refusal, assessment.tier)
+            refuse(403, decision.refusal, assessment.tier)
 
         be = self.policy.backend(decision.backend)
         use_redacted = (redaction is not None
@@ -94,24 +101,48 @@ class Gateway:
         rec.backend = be.name
         rec.model = sent["model"]
         rec.redactions = redaction.replacements if use_redacted else 0
+        reverser = (Reverser(self.scrubmap.reverse())
+                    if use_redacted else None)
+        return rec, be, sent, reverser
 
+    def finish(self, rec, be, usage, restored):
+        rec.status = 200
+        rec.restored = restored
+        rec.tokens = usage
+        rec.cost_usd = cost.estimate(be.prices, rec.model, rec.tokens)
+        if self.scrubmap is not None and self.scrubmap.dirty:
+            self.scrubmap.save()
+        self.log.write(rec)
+
+    # -- buffered --------------------------------------------------
+    def handle(self, path: str, raw: bytes) -> tuple[int, dict]:
+        try:
+            rec, be, sent, reverser = self.prepare(path, raw)
+        except Refused as exc:
+            return exc.status, _error(exc.why, "")
         try:
             out = backends.call(be, path, sent)
         except backends.BackendError as exc:
             rec.status = exc.status
-            return refuse(502, f"backend failed: {exc}", rec.tier)
-
+            rec.refusal = str(exc)
+            self.log.write(rec)
+            return 502, _error(f"backend failed: {exc}", rec.id)
         restored = 0
-        if use_redacted:
+        if reverser is not None:
             out, restored = redact.reverse(out, self.scrubmap)
-            if self.scrubmap.dirty:
-                self.scrubmap.save()
-        rec.status = 200
-        rec.restored = restored
-        rec.tokens = _usage(out)
-        rec.cost_usd = cost.estimate(be.prices, rec.model, rec.tokens)
-        self.log.write(rec)
+        self.finish(rec, be, _usage(out), restored)
         return 200, out
+
+    # -- streamed --------------------------------------------------
+    def handle_stream(self, path: str, raw: bytes):
+        """Yield bytes for the client. Writes the record at the end."""
+        rec, be, sent, reverser = self.prepare(path, raw)
+        info = {"usage": {}, "restored": 0}
+        for payload, info in streaming.relay(be, path, sent,
+                                             reverser=reverser):
+            yield payload
+        self.finish(rec, be, _usage({"usage": info["usage"]}),
+                    info.get("restored", 0))
 
 
 def _usage(response: dict) -> dict:
@@ -123,9 +154,11 @@ def _usage(response: dict) -> dict:
 
 
 def _error(message: str, call: str) -> dict:
-    return {"error": {"message": f"airlock: {message}",
-                      "type": "airlock_policy",
-                      "code": call}}
+    out = {"error": {"message": f"airlock: {message}",
+                     "type": "airlock_policy"}}
+    if call:
+        out["error"]["code"] = call
+    return out
 
 
 def make_handler(gw: Gateway):
@@ -145,8 +178,44 @@ def make_handler(gw: Gateway):
         def do_POST(self):
             n = int(self.headers.get("content-length") or 0)
             raw = self.rfile.read(n)
+            try:
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                body = {}
+            if streaming.wants_stream(body if isinstance(body, dict)
+                                      else {}):
+                self._stream(raw)
+                return
             status, obj = gw.handle(self.path, raw)
             self._send(status, obj)
+
+        def _stream(self, raw: bytes) -> None:
+            try:
+                chunks = gw.handle_stream(self.path, raw)
+                first = next(chunks, b"")
+            except Refused as exc:
+                self._send(exc.status, _error(exc.why, ""))
+                return
+            except backends.BackendError as exc:
+                self._send(502, _error(f"backend failed: {exc}", ""))
+                return
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("cache-control", "no-store")
+            self.send_header("transfer-encoding", "chunked")
+            self.end_headers()
+            self._chunk(first)
+            for payload in chunks:
+                self._chunk(payload)
+            self.wfile.write(b"0\r\n\r\n")
+
+        def _chunk(self, payload: bytes) -> None:
+            if not payload:
+                return
+            self.wfile.write(f"{len(payload):x}\r\n".encode())
+            self.wfile.write(payload)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
 
         def do_GET(self):
             if self.path.rstrip("/").endswith("/models"):
