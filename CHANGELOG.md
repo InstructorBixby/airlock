@@ -2,6 +2,33 @@
 
 Keep a Changelog format, semver versions.
 
+## [0.3.0]
+
+### Added
+- Streaming passthrough. `stream: true` goes through the gate
+  instead of being refused, which removes the last reason to set
+  a per-tool workaround.
+- SSE framing shared in shape with sse-intercept: incremental,
+  byte-oriented, correct across a chunk boundary anywhere
+  including mid-character.
+- Stateful un-redaction for streamed answers: a placeholder split
+  across two deltas is still restored, with a holdback bounded by
+  the longest placeholder in the map.
+- Weak aliases, for client names that are also ordinary words,
+  promoted to confidential only when something else in the same
+  text corroborates them. `docs/aliases.md`.
+- The classifier decodes base64, base64url, hex and gzip payloads
+  and runs the text detectors over the result, to a depth limit
+  and a byte budget. Findings from inside a payload are not
+  redactable, so they route local.
+
+### Fixed
+- An alias that is also an English word classified every call
+  containing it as client-confidential, which sent unrelated
+  questions to the local model.
+- A hostname inside a base64 parameter was invisible to every
+  detector and the call was classified public.
+
 ## [0.2.0]
 
 ### Added
