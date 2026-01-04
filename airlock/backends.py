@@ -7,6 +7,11 @@ reason routing is a config decision rather than a rewrite.
 Nothing here knows about tiers, policy or redaction. It takes a body
 and a backend and returns a response, and together with
 `airlock.streaming` it is the only place allowed to open a socket.
+
+`call` takes either a dict or the original bytes. Bytes are preferred
+whenever the gateway has not edited the body, because re-encoding a
+request changes its prefix and a changed prefix is a cache miss. See
+docs/caching.md.
 """
 from __future__ import annotations
 
@@ -37,13 +42,19 @@ def headers(be: Backend) -> dict:
     return h
 
 
-def call(be: Backend, path: str, body: dict, *,
+def encode(body) -> bytes:
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    return json.dumps(body).encode()
+
+
+def call(be: Backend, path: str, body, *,
          timeout: float = 180.0) -> dict:
-    """POST `body` to `be` and return the decoded response."""
+    """POST `body` (dict or raw bytes) and return the decoded response."""
     url = be.base_url.rstrip("/") + "/" + path.lstrip("/")
     try:
-        r = requests.post(url, data=json.dumps(body).encode(),
-                          headers=headers(be), timeout=timeout)
+        r = requests.post(url, data=encode(body), headers=headers(be),
+                          timeout=timeout)
     except requests.RequestException as exc:
         raise Unavailable(f"{be.name}: {type(exc).__name__}") from exc
     if r.status_code >= 500 or r.status_code == 429:
