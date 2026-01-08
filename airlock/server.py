@@ -7,28 +7,38 @@ Only the handlers live here. Classification, policy, routing, redaction
 and the audit record are all somewhere else, and this module's job is
 to make sure every request passes through all of them exactly once, in
 that order, with no path that skips one -- including the streaming
-path, which shares `decide` and differs only after it.
+path, which shares `prepare` and differs only after it.
 """
 from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from airlock import (audit, backends, classify, cost, redact, route,
-                     streaming, tiers)
+from airlock import (audit, backends, classify, cost, redact, response,
+                     route, streaming, tiers)
 from airlock.unredact import Reverser
 
 
 class Refused(Exception):
-    def __init__(self, status, why):
+    def __init__(self, status, why, call=""):
         super().__init__(why)
         self.status = status
         self.why = why
+        self.call = call
+
+
+class Prepared:
+    """The outcome of the decision, shared by both response paths."""
+
+    def __init__(self, rec, backend, payload, reverser):
+        self.rec = rec
+        self.backend = backend
+        #: dict when the body was edited, bytes when it was not
+        self.payload = payload
+        self.reverser = reverser
 
 
 class Gateway:
-    """Everything one process needs, assembled once at startup."""
-
     def __init__(self, policy, log, detectors=(), scrubmap=None,
                  engagement=None):
         self.policy = policy
@@ -42,9 +52,7 @@ class Gateway:
         return bool(self.engagement and self.engagement.deny_hosted)
 
     # -- the shared decision ---------------------------------------
-    def prepare(self, path: str, raw: bytes):
-        """Classify, route, redact. Returns (record, backend, body,
-        reverser) or raises Refused."""
+    def prepare(self, path: str, raw: bytes) -> Prepared:
         rec = audit.Record(id=audit.call_id(), ts=audit.now(),
                            path=path,
                            request_sha256=audit.body_digest(raw),
@@ -56,7 +64,7 @@ class Gateway:
             rec.tier = rec.tier or tier
             rec.refusal = why
             self.log.write(rec)
-            raise Refused(status, why)
+            raise Refused(status, why, rec.id)
 
         try:
             body = json.loads(raw or b"{}")
@@ -95,58 +103,77 @@ class Gateway:
         be = self.policy.backend(decision.backend)
         use_redacted = (redaction is not None
                         and "redacted" in decision.route.require)
-        sent = dict(redaction.body if use_redacted else body)
-        sent["model"] = be.model_for(body.get("model"))
         rec.decision = "allow"
         rec.backend = be.name
-        rec.model = sent["model"]
         rec.redactions = redaction.replacements if use_redacted else 0
+
+        model = be.model_for(body.get("model"))
+        rec.model = model
+        # Forward the bytes that arrived whenever nothing was edited.
+        # Re-encoding changes the prefix and a changed prefix is a
+        # cache miss -- see docs/caching.md.
+        if use_redacted:
+            payload = dict(redaction.body)
+            payload["model"] = model
+            rec.reserialised = True
+        elif be.preserve_model or model == body.get("model"):
+            payload = raw
+        else:
+            payload = dict(body)
+            payload["model"] = model
+            rec.reserialised = True
+
         reverser = (Reverser(self.scrubmap.reverse())
                     if use_redacted else None)
-        return rec, be, sent, reverser
+        return Prepared(rec, be, payload, reverser)
 
-    def finish(self, rec, be, usage, restored):
+    def finish(self, rec, be, usage, restored, response_tier=None):
         rec.status = 200
         rec.restored = restored
         rec.tokens = usage
         rec.cost_usd = cost.estimate(be.prices, rec.model, rec.tokens)
+        rec.response_tier = response_tier or ""
         if self.scrubmap is not None and self.scrubmap.dirty:
             self.scrubmap.save()
         self.log.write(rec)
 
     # -- buffered --------------------------------------------------
-    def handle(self, path: str, raw: bytes) -> tuple[int, dict]:
+    def handle(self, path: str, raw: bytes):
+        """(status, body, headers)."""
         try:
-            rec, be, sent, reverser = self.prepare(path, raw)
+            prep = self.prepare(path, raw)
         except Refused as exc:
-            return exc.status, _error(exc.why, "")
+            return exc.status, _error(exc.why, exc.call), {}
+        rec, be = prep.rec, prep.backend
         try:
-            out = backends.call(be, path, sent)
+            out = backends.call(be, path, prep.payload)
         except backends.BackendError as exc:
             rec.status = exc.status
             rec.refusal = str(exc)
             self.log.write(rec)
-            return 502, _error(f"backend failed: {exc}", rec.id)
+            return 502, _error(f"backend failed: {exc}", rec.id), {}
         restored = 0
-        if reverser is not None:
+        if prep.reverser is not None:
             out, restored = redact.reverse(out, self.scrubmap)
-        self.finish(rec, be, _usage(out), restored)
-        return 200, out
+        tier = response.assess(out, detectors=self.detectors)
+        self.finish(rec, be, _usage(out), restored, tier)
+        return 200, out, {response.HEADER: tier}
 
     # -- streamed --------------------------------------------------
     def handle_stream(self, path: str, raw: bytes):
-        """Yield bytes for the client. Writes the record at the end."""
-        rec, be, sent, reverser = self.prepare(path, raw)
+        prep = self.prepare(path, raw)
         info = {"usage": {}, "restored": 0}
-        for payload, info in streaming.relay(be, path, sent,
-                                             reverser=reverser):
+        for payload, info in streaming.relay(prep.backend, path,
+                                             prep.payload,
+                                             reverser=prep.reverser):
             yield payload
-        self.finish(rec, be, _usage({"usage": info["usage"]}),
+        self.finish(prep.rec, prep.backend,
+                    _usage({"usage": info["usage"]}),
                     info.get("restored", 0))
 
 
-def _usage(response: dict) -> dict:
-    u = response.get("usage") or {}
+def _usage(response_body: dict) -> dict:
+    u = response_body.get("usage") or {}
     return {k: v for k, v in (
         ("prompt", u.get("prompt_tokens")),
         ("completion", u.get("completion_tokens")),
@@ -167,11 +194,13 @@ def make_handler(gw: Gateway):
         server_version = "airlock"
         sys_version = ""
 
-        def _send(self, status: int, obj: dict) -> None:
+        def _send(self, status, obj, extra=None):
             payload = json.dumps(obj).encode()
             self.send_response(status)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(payload)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(payload)
 
@@ -186,15 +215,15 @@ def make_handler(gw: Gateway):
                                       else {}):
                 self._stream(raw)
                 return
-            status, obj = gw.handle(self.path, raw)
-            self._send(status, obj)
+            status, obj, extra = gw.handle(self.path, raw)
+            self._send(status, obj, extra)
 
         def _stream(self, raw: bytes) -> None:
             try:
                 chunks = gw.handle_stream(self.path, raw)
                 first = next(chunks, b"")
             except Refused as exc:
-                self._send(exc.status, _error(exc.why, ""))
+                self._send(exc.status, _error(exc.why, exc.call))
                 return
             except backends.BackendError as exc:
                 self._send(502, _error(f"backend failed: {exc}", ""))
