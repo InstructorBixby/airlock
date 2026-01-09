@@ -18,9 +18,7 @@ ids, not matched values; counts, not strings; a hash of the outbound
 body, not the body.
 
 **Enough to reconstruct the decision.** Which routes were considered
-and why each was rejected, not just the one that won. Without that, the
-only time the reasoning is visible is while the process is still alive,
-which is never when the question gets asked.
+and why each was rejected, not just the one that won.
 """
 from __future__ import annotations
 
@@ -32,7 +30,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA = 2
+SCHEMA = 3
 
 
 def call_id() -> str:
@@ -65,16 +63,18 @@ class Record:
     tokens: dict = field(default_factory=dict)
     cost_usd: float | None = None
     refusal: str = ""
-    #: one line per route considered, winner included. Contains route
-    #: names and requirement names, never matched text.
     considered: list = field(default_factory=list)
-    #: identifier of the policy that produced the decision, so a
-    #: record stays interpretable after the policy changes
     policy_sha256: str = ""
+    #: tier of the answer, for the pipeline case where one call's
+    #: output becomes the next call's input
+    response_tier: str = ""
+    #: set when the gateway had to re-encode the body, which costs a
+    #: cache hit. Recorded so a run of misses has a visible cause.
+    reserialised: bool = False
 
     def to_json(self) -> dict:
         out = {"v": SCHEMA}
-        skip = (None, "", [], {})
+        skip = (None, "", [], {}, False)
         for k, v in asdict(self).items():
             if k == "cost_usd":
                 if v is not None:
@@ -97,6 +97,9 @@ class Record:
             if self.redactions:
                 lines.append(f"redactions: {self.redactions} out, "
                              f"{self.restored} restored")
+            if self.response_tier:
+                lines.append(f"answer classified "
+                             f"{self.response_tier}")
         else:
             lines.append(f"decision: refuse -- {self.refusal}")
         if self.policy_sha256:
@@ -105,7 +108,7 @@ class Record:
 
 
 def from_json(raw: dict) -> Record:
-    fields = {f for f in Record.__dataclass_fields__}
+    fields = set(Record.__dataclass_fields__)
     return Record(**{k: v for k, v in raw.items() if k in fields})
 
 

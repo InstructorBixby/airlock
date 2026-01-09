@@ -27,6 +27,9 @@ class PolicyError(Exception):
 
 KNOWN_REQUIREMENTS = {"redacted", "local", "available"}
 
+BACKEND_KEYS = {"kind", "base_url", "api_key_env", "models", "prices",
+                "preserve_model", "timeout"}
+
 
 @dataclass(frozen=True)
 class Route:
@@ -47,6 +50,11 @@ class Backend:
     api_key_env: str | None = None
     models: dict = field(default_factory=dict)
     prices: dict = field(default_factory=dict)
+    #: when the clients already name a model this backend serves, so
+    #: the gateway should not rewrite the field and can forward the
+    #: original bytes. See docs/caching.md.
+    preserve_model: bool = False
+    timeout: float = 180.0
 
     @property
     def is_local(self) -> bool:
@@ -60,6 +68,8 @@ class Backend:
         return os.environ.get(self.api_key_env, "")
 
     def model_for(self, requested: str | None) -> str:
+        if self.preserve_model and requested:
+            return requested
         if requested and requested in self.models:
             return self.models[requested]
         return self.models.get("default") or requested or ""
@@ -71,8 +81,6 @@ class Policy:
     backends: dict = field(default_factory=dict)
     limits: dict = field(default_factory=dict)
     source: str = "<memory>"
-    #: hash of the file as loaded, written into every audit record so a
-    #: decision stays interpretable after the policy is edited
     digest: str = ""
 
     def candidates(self, tier: str) -> list[Route]:
@@ -88,6 +96,11 @@ class Policy:
     def max_outbound_chars(self) -> int:
         return int(self.limits.get("max_outbound_chars") or 0)
 
+    @property
+    def max_cost_usd(self) -> float | None:
+        v = self.limits.get("max_cost_usd")
+        return float(v) if v is not None else None
+
 
 def _parse_backends(raw: dict) -> dict:
     out = {}
@@ -98,6 +111,10 @@ def _parse_backends(raw: dict) -> dict:
         if missing:
             raise PolicyError(f"backend {name!r} missing "
                               f"{sorted(missing)}")
+        unknown = set(body) - BACKEND_KEYS
+        if unknown:
+            raise PolicyError(f"backend {name!r}: unknown key(s) "
+                              f"{sorted(unknown)}")
         prices = {}
         for model, p in (body.get("prices") or {}).items():
             parsed = Price.from_raw(p)
@@ -110,6 +127,8 @@ def _parse_backends(raw: dict) -> dict:
             api_key_env=body.get("api_key_env"),
             models=dict(body.get("models") or {}),
             prices=prices,
+            preserve_model=bool(body.get("preserve_model")),
+            timeout=float(body.get("timeout") or 180.0),
         )
     if not out:
         raise PolicyError("policy declares no backends")
