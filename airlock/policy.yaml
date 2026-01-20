@@ -7,16 +7,16 @@ version: 1
 
 routes:
   public:
+    # `available` makes the fallback real rather than theoretical: if
+    # the provider is not answering, the next route is tried instead of
+    # every call hanging for the request timeout.
     - backend: hosted
-    - backend: local            # when the provider is unreachable
+      require: [available]
+    - backend: local
 
   internal:
-    # Hosted is allowed for internal material, but only once the
-    # identifying strings are gone. `require: [redacted]` is not
-    # advice; the router will not select this route unless redaction
-    # actually succeeded for every finding.
     - backend: hosted
-      require: [redacted]
+      require: [redacted, available]
     - backend: local
 
   client-confidential:
@@ -42,10 +42,14 @@ backends:
     kind: openai
     base_url: http://127.0.0.1:8080/v1
     api_key_env: null
+    # The local tools name the model directly, so leave the field
+    # alone and forward the original bytes. See docs/caching.md.
+    preserve_model: true
     models:
       default: qwen2.5-14b-instruct
     prices:
       default: {prompt: 0.0, completion: 0.0}
+    timeout: 600
 
 limits:
   # Refuse rather than truncate. A silently shortened prompt produces

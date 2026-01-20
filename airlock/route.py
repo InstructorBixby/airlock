@@ -8,11 +8,34 @@ you did not need it.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from airlock import backends, tiers
 from airlock.model import Assessment
 from airlock.policy import Policy, Route
+
+#: How long a probe result is trusted. Short, because "the local model
+#: is up" is what decides whether a confidential call can run at all,
+#: and a stale yes routes a call at a backend that is not there. Long
+#: enough that a pipeline of forty calls does not probe forty times.
+PROBE_TTL = 15.0
+
+_probes: dict = {}
+
+
+def available(be, *, now=None) -> bool:
+    now = now if now is not None else time.monotonic()
+    hit = _probes.get(be.name)
+    if hit is not None and now - hit[0] < PROBE_TTL:
+        return hit[1]
+    ok = backends.probe(be)
+    _probes[be.name] = (now, ok)
+    return ok
+
+
+def forget_probes() -> None:
+    _probes.clear()
 
 
 @dataclass
@@ -77,9 +100,9 @@ def decide(pol: Policy, assessment: Assessment, *,
             unmet.append("redaction incomplete")
         if "local" in route.require and not be.is_local:
             unmet.append("backend is not local")
-        if "available" in route.require and check_available:
-            if not backends.probe(be):
-                unmet.append("backend not answering")
+        if ("available" in route.require and check_available
+                and not available(be)):
+            unmet.append("backend not answering")
         if unmet:
             dec.considered.append(
                 Considered(route, False, "; ".join(unmet)))
