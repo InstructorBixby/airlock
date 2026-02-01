@@ -3,11 +3,11 @@
 Everything on this box that talks to a model already honours
 `OPENAI_BASE_URL`, so being that URL is the entire adoption strategy.
 
-Only the handlers live here. Classification, policy, routing, redaction
-and the audit record are all somewhere else, and this module's job is
-to make sure every request passes through all of them exactly once, in
-that order, with no path that skips one -- including the streaming
-path, which shares `prepare` and differs only after it.
+Only the handlers live here. Classification, policy, routing, redaction,
+spend and the audit record are all somewhere else, and this module's
+job is to make sure every request passes through all of them exactly
+once, in that order, with no path that skips one -- including the
+streaming path, which shares `prepare` and differs only after it.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from airlock import (audit, backends, classify, cost, redact, response,
-                     route, streaming, tiers)
+                     route, spend, streaming, tiers)
 from airlock.unredact import Reverser
 
 
@@ -50,6 +50,17 @@ class Gateway:
     @property
     def deny_hosted(self) -> bool:
         return bool(self.engagement and self.engagement.deny_hosted)
+
+    @property
+    def ceiling(self) -> float | None:
+        if self.engagement is not None \
+                and self.engagement.max_cost_usd is not None:
+            return self.engagement.max_cost_usd
+        return self.policy.max_cost_usd
+
+    def spent(self) -> float:
+        eng = self.engagement.id if self.engagement else None
+        return spend.totals(self.log.records(), engagement=eng).usd
 
     # -- the shared decision ---------------------------------------
     def prepare(self, path: str, raw: bytes) -> Prepared:
@@ -101,6 +112,15 @@ class Gateway:
             refuse(403, decision.refusal, assessment.tier)
 
         be = self.policy.backend(decision.backend)
+        # A ceiling only constrains a backend that charges. The local
+        # model is not free in any real sense, but it is not spend.
+        if be.prices and self.ceiling is not None:
+            already = self.spent()
+            if spend.would_exceed(already, self.ceiling):
+                refuse(402, f"engagement spend ${already:.2f} has "
+                            f"reached the ${self.ceiling:.2f} ceiling",
+                       assessment.tier)
+
         use_redacted = (redaction is not None
                         and "redacted" in decision.route.require)
         rec.decision = "allow"
@@ -109,9 +129,6 @@ class Gateway:
 
         model = be.model_for(body.get("model"))
         rec.model = model
-        # Forward the bytes that arrived whenever nothing was edited.
-        # Re-encoding changes the prefix and a changed prefix is a
-        # cache miss -- see docs/caching.md.
         if use_redacted:
             payload = dict(redaction.body)
             payload["model"] = model
@@ -146,7 +163,8 @@ class Gateway:
             return exc.status, _error(exc.why, exc.call), {}
         rec, be = prep.rec, prep.backend
         try:
-            out = backends.call(be, path, prep.payload)
+            out = backends.call(be, path, prep.payload,
+                                timeout=be.timeout)
         except backends.BackendError as exc:
             rec.status = exc.status
             rec.refusal = str(exc)
