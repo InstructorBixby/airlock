@@ -1,9 +1,9 @@
 """Command line.
 
-`serve` is the one that matters. The rest exist because the two
-questions I actually ask of this thing -- "would this be allowed out"
-and "why did that call go where it went" -- should not require reading
-a JSONL file by hand.
+`serve` is the one that matters. The rest exist because the questions I
+actually ask of this thing -- would this be allowed out, why did that
+call go where it went, what has this engagement cost, did anything
+leave -- should not require reading a JSONL file by hand.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from airlock import (__version__, audit, classify, engagement, policy,
-                     route, scrubmap, server)
+                     prove, route, scrubmap, server, spend)
 from airlock.detect import roster as roster_mod
 from airlock.detect import scope as scope_mod
 
@@ -21,16 +21,14 @@ from airlock.detect import scope as scope_mod
 def _engagement(args):
     if not args.engagement:
         return None
-    root = Path(args.engagements) / args.engagement
-    return engagement.load(root)
+    return engagement.load(Path(args.engagements) / args.engagement)
 
 
 def _assemble(args):
     """Policy, detectors and map for this invocation."""
     pol = policy.load(args.policy)
-    extra = []
-    engagements = roster_mod.load(args.roster)
-    extra.append(("roster", roster_mod.detector(engagements)))
+    extra = [("roster", roster_mod.detector(
+        roster_mod.load(args.roster)))]
     eng = _engagement(args)
     smap = None
     if eng is not None:
@@ -43,7 +41,7 @@ def _assemble(args):
         smap = scrubmap.load(
             eng.map_path, engagement=eng.id,
             key=scrubmap.engagement_key(eng.key_path))
-    elif args.map:
+    elif getattr(args, "map", None):
         smap = scrubmap.load(args.map)
     return pol, extra, smap, eng
 
@@ -61,6 +59,9 @@ def cmd_serve(args) -> int:
           file=sys.stderr)
     if eng is not None and eng.deny_hosted:
         print("  hosted is denied for this engagement", file=sys.stderr)
+    if gw.ceiling is not None:
+        print(f"  spend ${gw.spent():.2f} of ${gw.ceiling:.2f}",
+              file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -90,14 +91,30 @@ def cmd_check(args) -> int:
 
 
 def cmd_why(args) -> int:
-    log = audit.Log(args.log)
-    rec = log.find(args.call)
+    rec = audit.Log(args.log).find(args.call)
     if rec is None:
         print(f"airlock: no call matching {args.call!r} in {args.log}",
               file=sys.stderr)
         return 1
     print(rec.explain())
     return 0
+
+
+def cmd_spend(args) -> int:
+    eng = args.engagement
+    totals = spend.totals(audit.Log(args.log).records(),
+                          engagement=eng)
+    print(spend.report(totals))
+    return 0
+
+
+def cmd_prove(args) -> int:
+    pol = policy.load(args.policy)
+    local = [name for name, be in pol.backends.items() if be.is_local]
+    proof = prove.prove(audit.Log(args.log).records(),
+                        args.engagement_id, local_backends=local)
+    print(proof.text())
+    return 0 if proof.verdict == prove.CLEAN else 1
 
 
 def cmd_engagements(args) -> int:
@@ -128,9 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--policy", default=str(policy.default_path()))
     p.add_argument("--roster", default="roster.yaml")
     p.add_argument("--log", default=str(audit.default_path()))
-    p.add_argument("--engagements", default="engagements",
-                   help="directory holding one subdirectory per "
-                        "engagement")
+    p.add_argument("--engagements", default="engagements")
     p.add_argument("-e", "--engagement",
                    help="load this engagement's profile, scope and map")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -152,6 +167,14 @@ def build_parser() -> argparse.ArgumentParser:
     w = sub.add_parser("why", help="explain a call from the audit log")
     w.add_argument("call", help="call id, or a unique prefix of one")
     w.set_defaults(fn=cmd_why)
+
+    sub.add_parser("spend", help="what has been spent, by engagement"
+                   ).set_defaults(fn=cmd_spend)
+
+    pr = sub.add_parser("prove", help="did anything for this "
+                                      "engagement reach a third party")
+    pr.add_argument("engagement_id")
+    pr.set_defaults(fn=cmd_prove)
 
     sub.add_parser("engagements",
                    help="list the engagement profiles found"
