@@ -3,7 +3,8 @@
 `serve` is the one that matters. The rest exist because the questions I
 actually ask of this thing -- would this be allowed out, why did that
 call go where it went, what has this engagement cost, did anything
-leave -- should not require reading a JSONL file by hand.
+leave, is the record intact -- should not require reading a JSONL file
+by hand.
 """
 from __future__ import annotations
 
@@ -25,7 +26,6 @@ def _engagement(args):
 
 
 def _assemble(args):
-    """Policy, detectors and map for this invocation."""
     pol = policy.load(args.policy)
     extra = [("roster", roster_mod.detector(
         roster_mod.load(args.roster)))]
@@ -66,6 +66,8 @@ def cmd_serve(args) -> int:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        audit.head_path(args.log).write_text(log.head + "\n")
     return 0
 
 
@@ -101,10 +103,8 @@ def cmd_why(args) -> int:
 
 
 def cmd_spend(args) -> int:
-    eng = args.engagement
-    totals = spend.totals(audit.Log(args.log).records(),
-                          engagement=eng)
-    print(spend.report(totals))
+    print(spend.report(spend.totals(audit.Log(args.log).records(),
+                                    engagement=args.engagement)))
     return 0
 
 
@@ -115,6 +115,24 @@ def cmd_prove(args) -> int:
                         args.engagement_id, local_backends=local)
     print(proof.text())
     return 0 if proof.verdict == prove.CLEAN else 1
+
+
+def cmd_verify(args) -> int:
+    log = audit.Log(args.log)
+    expect = None
+    hp = audit.head_path(args.log)
+    if args.head:
+        expect = args.head
+    elif hp.exists():
+        expect = hp.read_text().strip()
+    breaks = log.verify(expect_head=expect)
+    if not breaks:
+        n = sum(1 for _ in log.records())
+        print(f"{n} record(s), chain intact, head {log.head[:19]}")
+        return 0
+    for b in breaks:
+        print(str(b), file=sys.stderr)
+    return 1
 
 
 def cmd_engagements(args) -> int:
@@ -175,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
                                       "engagement reach a third party")
     pr.add_argument("engagement_id")
     pr.set_defaults(fn=cmd_prove)
+
+    v = sub.add_parser("verify", help="check the audit chain")
+    v.add_argument("--head", help="expected head digest; defaults to "
+                                  "the recorded one")
+    v.set_defaults(fn=cmd_verify)
 
     sub.add_parser("engagements",
                    help="list the engagement profiles found"
