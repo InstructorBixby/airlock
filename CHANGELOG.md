@@ -2,6 +2,36 @@
 
 Keep a Changelog format, semver versions.
 
+## [0.4.0]
+
+### Added
+- The audit log is hash-chained. A deleted, reordered or edited
+  line breaks the chain at a known point and `airlock verify`
+  says where. This makes a silent edit impossible, not an edit
+  impossible; the README is explicit about the difference.
+- `airlock prove <engagement>` answers the question the log
+  exists for, and reports `partial` rather than `clean` when the
+  log contains calls it cannot speak to.
+- `airlock spend`, with per-engagement totals read from the log
+  rather than from a counter that resets on restart.
+- Spend ceilings per engagement, checked before the call rather
+  than discovered after it.
+- `require: [available]` probes a backend before routing to it,
+  so a hosted provider being down falls through to the local
+  model instead of hanging until the request timeout. Probe
+  results are cached briefly so a long pipeline does not probe
+  once per call.
+- The answer is classified too, and its tier is on the record and
+  in an `x-airlock-tier` response header, for the pipeline case
+  where one call's output becomes the next call's input.
+- `preserve_model` and a per-backend `timeout`.
+
+### Fixed
+- The gateway decoded and re-encoded every request body, which
+  changed its byte prefix and cost essentially every prompt cache
+  hit on the hosted path. Unmodified bodies are now forwarded
+  verbatim; `reserialised` on the record says when they were not.
+
 ## [0.3.0]
 
 ### Added
