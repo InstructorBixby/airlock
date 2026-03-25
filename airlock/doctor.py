@@ -3,20 +3,21 @@
 The gateway is only as good as its coverage, and the coverage depends
 on environment variables in shells I started at various times for
 various reasons. The failure is silent by nature: a tool pointed at a
-provider works perfectly, which is exactly why nothing tells you.
+provider works perfectly, which is exactly why nothing tells you. See
+docs/coverage.md for the instance that produced this module.
 
 Each check returns a (ok, name, detail) triple. Nothing here is
 enforcement -- it cannot be, this is a process looking at its own
-environment -- it is a list of things to go and look at. `egress-ledger`
-is the one that answers the question properly, by recording what a
-process tree actually connected to.
+environment -- it is a list of things to go and look at.
+`egress-ledger` is the one that answers the question properly, by
+recording what a process tree actually connected to.
 """
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path
 
-#: Variables that send a tool somewhere other than the gateway.
 PROVIDER_VARS = (
     "OPENAI_API_BASE",      # the older spelling, still honoured
     "AZURE_OPENAI_ENDPOINT",
@@ -24,7 +25,6 @@ PROVIDER_VARS = (
     "OPENAI_ORGANIZATION",
 )
 
-#: Files that commonly hold a base URL a tool will prefer over the env.
 CONFIG_HINTS = (
     "~/.config/io.datasette.llm/default_model.txt",
     "~/.continue/config.json",
@@ -32,17 +32,35 @@ CONFIG_HINTS = (
 )
 
 
+def _port_of(url: str) -> int | None:
+    tail = url.split("//", 1)[-1].split("/", 1)[0]
+    if ":" not in tail:
+        return None
+    try:
+        return int(tail.rsplit(":", 1)[1])
+    except ValueError:
+        return None
+
+
 def _is_gateway(url: str, host: str, port: int) -> bool:
     if not url:
         return False
-    return (f"{host}:{port}" in url
-            or (host in ("127.0.0.1", "localhost")
-                and f":{port}" in url
-                and ("127.0.0.1" in url or "localhost" in url)))
+    tail = url.split("//", 1)[-1].split("/", 1)[0]
+    h = tail.rsplit(":", 1)[0] if ":" in tail else tail
+    return (h in (host, "localhost", "127.0.0.1")
+            and _port_of(url) == port)
+
+
+def _listening(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
 
 def checks(host: str = "127.0.0.1", port: int = 8111,
-           env=None, home=None):
+           env=None, home=None, probe=True):
     env = os.environ if env is None else env
     home = Path(home) if home else Path.home()
     out = []
@@ -54,19 +72,29 @@ def checks(host: str = "127.0.0.1", port: int = 8111,
     elif _is_gateway(base, host, port):
         out.append((True, "OPENAI_BASE_URL", base))
     else:
-        out.append((False, "OPENAI_BASE_URL",
-                    f"{base} is not this gateway"))
+        other = _port_of(base)
+        detail = f"{base} is not this gateway"
+        if other is not None and not _is_gateway(base, host, other):
+            pass
+        elif other is not None:
+            # Right host, wrong port: a shell older than the last
+            # restart. This is the one that bit.
+            detail = (f"{base} points at port {other}, not {port}; "
+                      f"this shell predates the running gateway")
+        out.append((False, "OPENAI_BASE_URL", detail))
+
+    if probe and not _listening(host, port):
+        out.append((False, "listener",
+                    f"nothing is listening on {host}:{port}; a client "
+                    f"that cannot reach it will fall back to its own "
+                    f"default, silently"))
 
     for var in PROVIDER_VARS:
-        val = env.get(var)
-        if val:
+        if env.get(var):
             out.append((False, var,
                         "set, and takes precedence in some clients"))
 
     if not env.get("OPENAI_API_KEY"):
-        # Not a problem for the gateway, but several clients refuse to
-        # start without one, and the resulting error points at the
-        # wrong thing.
         out.append((False, "OPENAI_API_KEY",
                     "not set; some clients refuse to start"))
 
