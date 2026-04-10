@@ -20,7 +20,9 @@ from airlock import tiers
 
 @dataclass(frozen=True)
 class Finding:
-    #: stable detector id, e.g. "net.private-address"
+    #: stable detector id, e.g. "net.private-address". A `@base64` or
+    #: `~fold` suffix means it was found in a decoded or normalised
+    #: view of the text rather than in the text itself.
     kind: str
     #: the text that matched, for redaction. Never serialised.
     value: str
@@ -46,6 +48,8 @@ class Assessment:
     undecided_because: str | None = None
     #: one readable line per weak finding that something else backed up
     corroborated: list = field(default_factory=list)
+    #: the text contained characters that folding changed
+    folded: bool = False
 
     @property
     def reasons(self) -> list[str]:
@@ -70,6 +74,8 @@ class Assessment:
             out["engagements"] = self.engagements
         if self.corroborated:
             out["corroborated"] = list(self.corroborated)
+        if self.folded:
+            out["folded"] = True
         if self.undecided_because:
             out["undecided_because"] = self.undecided_because
         return out

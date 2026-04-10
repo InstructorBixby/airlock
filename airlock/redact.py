@@ -15,12 +15,19 @@ carry the design:
    it covered every finding, and the router treats anything less as
    not-redacted.
 
-3. **Credentials are never redactable.** A placeholder for a secret
-   buys nothing -- the model cannot reason about a token it cannot see
-   -- and costs the risk of the substitution being wrong. Their
-   presence makes redaction incomplete, which routes the call locally.
-   That is the desired behaviour and it needed no mechanism beyond the
-   table below.
+3. **Three classes are never redactable.** Credentials, because a
+   placeholder for a secret buys nothing and costs the risk of the
+   substitution being wrong. Findings from inside an encoded payload
+   (`@base64` and friends), because replacing them means re-encoding
+   the blob I am asking about. Findings only visible after folding
+   (`~fold`), because an offset in folded text does not map back and
+   substituting by value would leave the invisible characters in
+   place.
+
+   All three make redaction incomplete, which under the default policy
+   sends the whole call to the local model. That is the desired
+   behaviour in every case and it needed no mechanism beyond the exact
+   key lookup below.
 """
 from __future__ import annotations
 
@@ -39,8 +46,12 @@ KINDS = {
     "net.internal-hostname": "host",
     "net.internal-shortname": "host",
     "roster.client-name": "term",
+    "roster.weak-name": "term",
     "roster.client-domain": "host",
     "roster.client-net": "ip4",
+    "engagement.term": "term",
+    "scope.host": "host",
+    "scope.address": "ip4",
 }
 
 
