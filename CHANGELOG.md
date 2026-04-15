@@ -2,6 +2,28 @@
 
 Keep a Changelog format, semver versions.
 
+## [0.5.0]
+
+### Added
+- Every detector runs over a folded view of the text as well as
+  the raw text: NFKC, invisible characters removed, bidi controls
+  removed, ANSI escapes removed. A finding only visible in the
+  folded form is marked `~fold` and is not redactable.
+- `airlock doctor`, which lists what in the current environment
+  would bypass the gateway, including the specific case of a
+  shell older than the running gateway.
+- `docs/reasons.md`, the full reason-code vocabulary, and
+  `docs/folding.md` and `docs/coverage.md` for the two incidents
+  behind this release.
+
+### Fixed
+- A hostname containing a zero-width space matched no detector
+  and classified as public.
+- ANSI colour codes in piped terminal output split tokens the
+  detectors were matching on.
+- Corroboration compared raw kinds, so a weak alias found only in
+  the folded pass was never promoted.
+
 ## [0.4.0]
 
 ### Added
