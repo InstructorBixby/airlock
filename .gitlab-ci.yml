@@ -1,15 +1,61 @@
 stages:
   - check
 
-test:
-  stage: check
+variables:
+  # The cache has to live inside the build directory or the runner
+  # cannot archive it.
+  UV_CACHE_DIR: .cache/uv
+
+.py:
   image: python:$PY-slim
-  parallel:
-    matrix:
-      - PY: ["3.11", "3.12"]
+  cache:
+    key:
+      files:
+        - pyproject.toml
+    paths:
+      - .cache/uv
   before_script:
     - pip install -q uv
     - uv pip install --system -e ".[dev]"
+
+test:
+  extends: .py
+  stage: check
+  parallel:
+    matrix:
+      - PY: ["3.11", "3.12", "3.13"]
   script:
     - ruff check .
+    - pytest --cov=airlock --cov-report=term --cov-fail-under=88
+
+typecheck:
+  extends: .py
+  stage: check
+  variables:
+    PY: "3.12"
+  script:
+    - mypy
+
+host:
+  # The matrix runs in containers. This one runs on the shell runner,
+  # which is the machine the gateway actually runs on: different
+  # Python build, different openssl, the only result that decides
+  # whether I can rely on it tomorrow.
+  stage: check
+  tags:
+    - shell
+  script:
+    - uv pip install -e ".[dev]"
     - pytest -q
+
+minimal:
+  # The gateway has to start with nothing optional installed. A
+  # control whose fail-closed path depends on an extra is not one.
+  stage: check
+  image: python:3.12-slim
+  before_script:
+    - pip install -q uv
+    - uv pip install --system -e .
+  script:
+    - python -c "import airlock.api"
+    - airlock --version
