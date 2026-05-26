@@ -59,3 +59,18 @@ minimal:
   script:
     - python -c "import airlock.api"
     - airlock --version
+
+# No Dependabot here and nothing to point one at. A Monday schedule
+# prints what has moved and leaves the decision with me, which is the
+# right shape for this repository: a dependency bump in a control is
+# a change to the control, and it gets read.
+outdated:
+  extends: .py
+  stage: check
+  variables:
+    PY: "3.12"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  script:
+    - uv pip list --system --outdated
+  allow_failure: true
