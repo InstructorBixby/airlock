@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "http://git.c01n31.net/c01n31pan1c/airlock/policy-v1.json",
+  "title": "airlock policy, version 1",
+  "type": "object",
+  "required": ["version", "routes", "backends"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "routes": {
+      "type": "object",
+      "required": ["public", "internal", "client-confidential"],
+      "additionalProperties": false,
+      "properties": {
+        "public": {"$ref": "#/$defs/routeList"},
+        "internal": {"$ref": "#/$defs/routeList"},
+        "client-confidential": {"$ref": "#/$defs/routeList"},
+        "undecided": {
+          "description": "Must be empty. The classifier's no-verdict answer has no route and cannot be given one.",
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "backends": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/backend"}
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_outbound_chars": {"type": "integer", "minimum": 1},
+        "max_cost_usd": {"type": "number", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "routeList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["backend"],
+        "additionalProperties": false,
+        "properties": {
+          "backend": {"type": "string", "minLength": 1},
+          "require": {
+            "type": "array",
+            "items": {"enum": ["redacted", "local", "available"]},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "backend": {
+      "type": "object",
+      "required": ["kind", "base_url"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["openai"]},
+        "base_url": {"type": "string", "format": "uri"},
+        "api_key_env": {"type": ["string", "null"]},
+        "preserve_model": {"type": "boolean"},
+        "timeout": {"type": "number", "exclusiveMinimum": 0},
+        "models": {"type": "object",
+                   "additionalProperties": {"type": "string"}},
+        "prices": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "prompt": {"type": "number", "minimum": 0},
+              "completion": {"type": "number", "minimum": 0}
+            }
+          }
+        }
+      }
+    }
+  }
+}
