@@ -1,0 +1,117 @@
+# Conformance cases. Run against YOUR policy file:
+#
+#     airlock conformance --policy ./policy.yaml
+#
+# No case asserts a tier -- that would test my regexes against my own
+# regexes. Each asserts a behaviour: refused, or routed to a local
+# backend. `because` pins the refusal reason so a case cannot pass by
+# failing for an unrelated reason.
+#
+# A case that catches a fail-open policy is worth more than anything
+# else I could add to this repository.
+
+cases:
+  # --- the fail-closed set ---------------------------------------
+  - id: body-not-json
+    why: a malformed body must not be forwarded in the hope it parses
+    raw: "not json at all"
+    expect: refused
+    because: not json
+
+  - id: body-not-an-object
+    why: a json array is valid json and not a request
+    raw: "[1, 2, 3]"
+    expect: refused
+    because: not an object
+
+  - id: empty-object
+    why: no messages means no text to classify, which is not public
+    body: {}
+    expect: refused
+    because: no model-visible text
+
+  - id: messages-not-a-list
+    why: a shape the reader does not understand must refuse
+    body: {messages: "hello"}
+    expect: refused
+    because: not a list
+
+  - id: unreadable-content-part
+    why: an image part cannot be classified as text and must not be skipped
+    body:
+      messages:
+        - role: user
+          content:
+            - {type: image_url, image_url: {url: "data:image/png;base64,aaa"}}
+    expect: refused
+    because: image_url
+
+  - id: unknown-content-part-type
+    why: a part type added by a provider after this build must refuse
+    body:
+      messages:
+        - role: user
+          content:
+            - {type: input_audio, input_audio: {data: "aaa"}}
+    expect: refused
+    because: input_audio
+
+  # --- the route-local set ---------------------------------------
+  - id: private-address
+    why: an address in a private range is client material
+    body:
+      messages: [{role: user, content: "why is 10.40.1.9 refusing"}]
+    expect: local
+
+  - id: internal-hostname
+    why: a .corp name only exists inside somebody's network
+    body:
+      messages: [{role: user, content: "dc-01.hq.corp will not bind"}]
+    expect: local
+
+  - id: credential-in-prompt
+    why: a credential has no useful redacted form, so it stays local
+    body:
+      messages:
+        - role: user
+          content: "is this valid: Authorization: Bearer aaaabbbbccccdddd"
+    expect: local
+
+  - id: private-key-block
+    why: a PEM private key must never reach a hosted backend
+    body:
+      messages:
+        - role: user
+          content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEogIB"
+    expect: local
+
+  - id: hostname-in-base64
+    why: an encoded payload is text the detectors have to decode first
+    body:
+      messages:
+        - role: user
+          content: "what is this: SG9zdDogZGMtMDEuaHEuY29ycApYLVJlYWw6IDEwLjQwLjEuOQ=="
+    expect: local
+
+  - id: hostname-with-zero-width-space
+    why: an invisible character must not bypass the matcher
+    body:
+      messages: [{role: user, content: "dc-01.hq\u200b.corp timed out"}]
+    expect: local
+
+  - id: hostname-in-tool-call-arguments
+    why: tool-call arguments are model-visible text
+    body:
+      messages:
+        - role: assistant
+          tool_calls:
+            - function: {name: lookup, arguments: '{"host":"sql03.hq.corp"}'}
+    expect: local
+
+  - id: hostname-in-a-tool-description
+    why: a tool description is sent to the model like anything else
+    body:
+      messages: [{role: user, content: "list the tables"}]
+      tools:
+        - function: {name: q, description: "query exch-02.hq.corp"}
+    expect: local
