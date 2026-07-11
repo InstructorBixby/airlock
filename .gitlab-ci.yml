@@ -2,8 +2,6 @@ stages:
   - check
 
 variables:
-  # The cache has to live inside the build directory or the runner
-  # cannot archive it.
   UV_CACHE_DIR: .cache/uv
 
 .py:
@@ -37,16 +35,25 @@ typecheck:
     - mypy
 
 host:
-  # The matrix runs in containers. This one runs on the shell runner,
-  # which is the machine the gateway actually runs on: different
-  # Python build, different openssl, the only result that decides
-  # whether I can rely on it tomorrow.
   stage: check
   tags:
     - shell
   script:
     - uv pip install -e ".[dev]"
     - pytest -q
+
+conformance:
+  # The example policy has to fail closed, checked exactly the way I
+  # check an engagement policy. If the command cannot prove the file
+  # in this repository, it cannot prove the one in a hurry on a
+  # Thursday either.
+  extends: .py
+  stage: check
+  variables:
+    PY: "3.12"
+  script:
+    - airlock policy lint --policy airlock/policy.yaml
+    - airlock conformance --policy airlock/policy.yaml
 
 minimal:
   # The gateway has to start with nothing optional installed. A
@@ -59,11 +66,8 @@ minimal:
   script:
     - python -c "import airlock.api"
     - airlock --version
+    - airlock conformance --policy airlock/policy.yaml
 
-# No Dependabot here and nothing to point one at. A Monday schedule
-# prints what has moved and leaves the decision with me, which is the
-# right shape for this repository: a dependency bump in a control is
-# a change to the control, and it gets read.
 outdated:
   extends: .py
   stage: check

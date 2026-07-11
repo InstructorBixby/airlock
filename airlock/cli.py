@@ -1,10 +1,10 @@
 """Command line.
 
-`serve` is the one that matters. The rest exist because the questions I
-actually ask of this thing -- would this be allowed out, why did that
-call go where it went, what has this engagement cost, did anything
-leave, is the record intact -- should not require reading a JSONL file
-by hand.
+`serve` is the one that matters. The rest exist because the questions
+asked of this thing -- would this be allowed out, why did that call go
+where it went, what has this engagement cost, did anything leave, is
+the record intact, does this policy fail closed -- should not require
+reading a JSONL file by hand at the end of a long week.
 """
 from __future__ import annotations
 
@@ -13,24 +13,24 @@ import json
 import sys
 from pathlib import Path
 
-from airlock import (__version__, audit, classify, engagement, policy,
-                     prove, route, scrubmap, server, spend)
+from airlock import (__version__, audit, classify, conformance,
+                     engagement, policy, policylint, prove, route,
+                     scrubmap, server, spend)
 from airlock.detect import roster as roster_mod
 from airlock.detect import scope as scope_mod
 
 
 def _engagement(args):
-    if not args.engagement:
+    if not getattr(args, "engagement", None):
         return None
     return engagement.load(Path(args.engagements) / args.engagement)
 
 
-def _assemble(args):
-    pol = policy.load(args.policy)
-    extra = [("roster", roster_mod.detector(
-        roster_mod.load(args.roster)))]
-    eng = _engagement(args)
-    smap = None
+def _detectors(args, eng):
+    extra = []
+    if Path(args.roster).exists():
+        extra.append(("roster", roster_mod.detector(
+            roster_mod.load(args.roster))))
     if eng is not None:
         if eng.scope is not None:
             extra.append(("scope", scope_mod.from_file(eng.scope,
@@ -38,6 +38,19 @@ def _assemble(args):
         if eng.extra_terms:
             extra.append(("terms", roster_mod.terms_detector(
                 eng.extra_terms, eng.id)))
+    return extra
+
+
+def _assemble(args, *, require_roster=True):
+    pol = policy.load(args.policy)
+    if require_roster and not Path(args.roster).exists():
+        raise roster_mod.RosterError(
+            f"no roster at {args.roster}; refusing to start, because "
+            f"an absent roster classifies client material as public")
+    eng = _engagement(args)
+    extra = _detectors(args, eng)
+    smap = None
+    if eng is not None:
         smap = scrubmap.load(
             eng.map_path, engagement=eng.id,
             key=scrubmap.engagement_key(eng.key_path))
@@ -51,7 +64,6 @@ def cmd_serve(args) -> int:
     log = audit.Log(args.log)
     gw = server.Gateway(pol, log, detectors=extra, scrubmap=smap,
                         engagement=eng)
-    httpd = server.serve(gw, args.host, args.port)
     label = f", engagement {eng.id}" if eng else ""
     print(f"airlock on http://{args.host}:{args.port}/v1 "
           f"(policy {pol.source}{label})", file=sys.stderr)
@@ -62,6 +74,7 @@ def cmd_serve(args) -> int:
     if gw.ceiling is not None:
         print(f"  spend ${gw.spent():.2f} of ${gw.ceiling:.2f}",
               file=sys.stderr)
+    httpd = server.serve(gw, args.host, args.port)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -72,7 +85,7 @@ def cmd_serve(args) -> int:
 
 
 def cmd_check(args) -> int:
-    pol, extra, _, _ = _assemble(args)
+    pol, extra, _, _ = _assemble(args, require_roster=False)
     text = (sys.stdin.read() if args.file == "-"
             else Path(args.file).read_text())
     assessment = classify.classify_text(text, extra=extra)
@@ -119,11 +132,9 @@ def cmd_prove(args) -> int:
 
 def cmd_verify(args) -> int:
     log = audit.Log(args.log)
-    expect = None
+    expect = args.head
     hp = audit.head_path(args.log)
-    if args.head:
-        expect = args.head
-    elif hp.exists():
+    if expect is None and hp.exists():
         expect = hp.read_text().strip()
     breaks = log.verify(expect_head=expect)
     if not breaks:
@@ -133,6 +144,34 @@ def cmd_verify(args) -> int:
     for b in breaks:
         print(str(b), file=sys.stderr)
     return 1
+
+
+def cmd_policy(args) -> int:
+    errors, notes = policylint.lint(args.policy)
+    for n in notes:
+        print(n)
+    for e in errors:
+        print(f"error: {e}", file=sys.stderr)
+    if errors:
+        return 1
+    print(f"{args.policy}: ok")
+    return 0
+
+
+def cmd_conformance(args) -> int:
+    pol = policy.load(args.policy)
+    cases = conformance.load_cases(args.cases)
+    eng = _engagement(args)
+    report = conformance.run(pol, cases,
+                             detectors=_detectors(args, eng))
+    print(report.text())
+    return 1 if report.failed else 0
+
+
+def cmd_doctor(args) -> int:
+    from airlock import doctor
+    print(doctor.report(doctor.checks(args.host, args.port)))
+    return 0
 
 
 def cmd_engagements(args) -> int:
@@ -198,6 +237,20 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--head", help="expected head digest; defaults to "
                                   "the recorded one")
     v.set_defaults(fn=cmd_verify)
+
+    pl = sub.add_parser("policy", help="validate a policy file")
+    pl.add_argument("action", choices=["lint"])
+    pl.set_defaults(fn=cmd_policy)
+
+    cf = sub.add_parser("conformance",
+                        help="prove this policy fails closed")
+    cf.add_argument("--cases", help="a cases file of your own")
+    cf.set_defaults(fn=cmd_conformance)
+
+    dr = sub.add_parser("doctor", help="what would bypass the gateway")
+    dr.add_argument("--host", default="127.0.0.1")
+    dr.add_argument("--port", type=int, default=8111)
+    dr.set_defaults(fn=cmd_doctor)
 
     sub.add_parser("engagements",
                    help="list the engagement profiles found"
