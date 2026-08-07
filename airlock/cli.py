@@ -15,7 +15,7 @@ from pathlib import Path
 
 from airlock import (__version__, audit, classify, conformance,
                      engagement, policy, policylint, prove, route,
-                     scrubmap, server, spend)
+                     scrubmap, selftest, server, spend)
 from airlock.detect import roster as roster_mod
 from airlock.detect import scope as scope_mod
 
@@ -61,6 +61,19 @@ def _assemble(args, *, require_roster=True):
 
 def cmd_serve(args) -> int:
     pol, extra, smap, eng = _assemble(args)
+    if args.selftest:
+        try:
+            report = selftest.run(pol, detectors=extra)
+        except selftest.SelfTestFailed as exc:
+            print(exc.report.text(), file=sys.stderr)
+            print(f"airlock: {exc}; not serving", file=sys.stderr)
+            return 3
+        print(f"selftest: {len(report.outcomes)} fail-closed case(s) "
+              f"hold for {pol.source}", file=sys.stderr)
+    else:
+        print("airlock: starting WITHOUT a selftest; nothing has been "
+              "proved about this policy", file=sys.stderr)
+
     log = audit.Log(args.log)
     gw = server.Gateway(pol, log, detectors=extra, scrubmap=smap,
                         engagement=eng)
@@ -211,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8111)
     s.add_argument("--map", help="scrubkit mapping, when not using -e")
+    s.add_argument("--selftest", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="prove the fail-closed cases hold before "
+                        "serving (default: on)")
     s.set_defaults(fn=cmd_serve)
 
     c = sub.add_parser("check", help="classify a file and print the "
