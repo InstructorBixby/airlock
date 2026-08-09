@@ -1,0 +1,48 @@
+site_name: airlock
+site_description: Policy gateway for model calls
+repo_url: http://git.c01n31.net/c01n31pan1c/airlock
+edit_uri: -/edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: {icon: material/weather-night, name: dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: {icon: material/weather-sunny, name: light mode}
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc: {permalink: true}
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Start here:
+      - Overview: index.md
+      - What it guarantees: guarantees.md
+      - What it does not protect against: limits.md
+      - Threat model: threat-model.md
+  - Running it:
+      - Policy file: policy-format.md
+      - Conformance and selftest: conformance.md
+      - Coverage: coverage.md
+  - How it works:
+      - Redaction round trip: redaction.md
+      - Streaming: streaming.md
+      - Folding: folding.md
+      - Weak aliases: aliases.md
+      - Caching: caching.md
+      - Reason codes: reasons.md
+  - Notes to myself:
+      - On relying on this: relying.md
+      - Failure modes that matter: failure-modes.md
+      - Decisions I keep wanting to reverse: decisions.md
+      - Before I add a detector: detectors.md

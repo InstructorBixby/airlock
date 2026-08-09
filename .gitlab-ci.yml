@@ -1,5 +1,6 @@
 stages:
   - check
+  - docs
 
 variables:
   UV_CACHE_DIR: .cache/uv
@@ -43,10 +44,6 @@ host:
     - pytest -q
 
 conformance:
-  # The example policy has to fail closed, checked exactly the way I
-  # check an engagement policy. If the command cannot prove the file
-  # in this repository, it cannot prove the one in a hurry on a
-  # Thursday either.
   extends: .py
   stage: check
   variables:
@@ -56,8 +53,6 @@ conformance:
     - airlock conformance --policy airlock/policy.yaml
 
 minimal:
-  # The gateway has to start with nothing optional installed. A
-  # control whose fail-closed path depends on an extra is not one.
   stage: check
   image: python:3.12-slim
   before_script:
@@ -78,3 +73,21 @@ outdated:
   script:
     - uv pip list --system --outdated
   allow_failure: true
+
+# Not deployed anywhere. The artefact is so a broken link fails here
+# rather than the next time I go looking for the one paragraph that
+# explains what `undecided` means; day to day I read these with
+# `mkdocs serve` on loopback.
+docs:
+  stage: docs
+  image: python:3.12-slim
+  before_script:
+    - pip install -q uv
+    - uv pip install --system -e ".[docs]"
+  script:
+    - mkdir -p docs/schema && cp airlock/schema/*.json docs/schema/
+    - mkdocs build --strict
+  artifacts:
+    paths:
+      - site/
+    expire_in: 1 week
