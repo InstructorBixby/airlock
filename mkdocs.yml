@@ -32,6 +32,7 @@ nav:
       - Threat model: threat-model.md
   - Running it:
       - Policy file: policy-format.md
+      - Container image: container.md
       - Conformance and selftest: conformance.md
       - Coverage: coverage.md
   - How it works:
