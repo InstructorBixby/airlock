@@ -1,6 +1,7 @@
 stages:
   - check
   - docs
+  - build
 
 variables:
   UV_CACHE_DIR: .cache/uv
@@ -74,10 +75,6 @@ outdated:
     - uv pip list --system --outdated
   allow_failure: true
 
-# Not deployed anywhere. The artefact is so a broken link fails here
-# rather than the next time I go looking for the one paragraph that
-# explains what `undecided` means; day to day I read these with
-# `mkdocs serve` on loopback.
 docs:
   stage: docs
   image: python:3.12-slim
@@ -91,3 +88,51 @@ docs:
     paths:
       - site/
     expire_in: 1 week
+
+# A tag produces the two things I install from: a wheel and an image.
+# Neither goes anywhere but this machine. The suite and the
+# conformance cases are the gate, because a build of a control that
+# was not proved to fail closed has no business being the one I am
+# running.
+wheel:
+  stage: build
+  image: python:3.12-slim
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  before_script:
+    - pip install -q uv
+    - uv pip install --system -e ".[dev]"
+  script:
+    - ruff check .
+    - mypy
+    - pytest
+    - airlock policy lint --policy airlock/policy.yaml
+    - airlock conformance --policy airlock/policy.yaml
+    - python tools/stamp.py
+    - uv build
+    - sha256sum dist/*
+  artifacts:
+    paths:
+      - dist/
+    expire_in: never
+
+# Cannot be called `image` -- that is a reserved keyword and the
+# lint is unhelpful about it.
+container:
+  stage: build
+  tags:
+    - shell
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v/
+  script:
+    - podman build -t airlock:$CI_COMMIT_TAG -f Containerfile .
+    - podman run --rm airlock:$CI_COMMIT_TAG --version
+    # Nothing mounted, so there is no policy. It has to refuse to
+    # serve rather than come up with something of its own: exit 2 is
+    # the configuration error. An image that served without a policy
+    # would be the one mistake this whole repository is about.
+    - podman run --rm airlock:$CI_COMMIT_TAG serve || test $? -eq 2
+    - podman run --rm -v ./airlock/policy.yaml:/p.yaml:ro
+        airlock:$CI_COMMIT_TAG conformance --policy /p.yaml
+  after_script:
+    - podman rmi -f airlock:$CI_COMMIT_TAG || true

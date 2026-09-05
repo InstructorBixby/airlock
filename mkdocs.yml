@@ -35,6 +35,7 @@ nav:
       - Container image: container.md
       - Conformance and selftest: conformance.md
       - Coverage: coverage.md
+      - Which build is serving: builds.md
   - How it works:
       - Redaction round trip: redaction.md
       - Streaming: streaming.md
