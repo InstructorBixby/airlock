@@ -2,6 +2,38 @@
 
 Keep a Changelog format, semver versions.
 
+## [0.9.0]
+
+### Added
+- `airlock conformance`: a suite that runs against the policy I
+  am actually running and proves it fails closed. Cases assert
+  behaviour, never a tier, and a refusal case pins the expected
+  reason so it cannot pass by failing for an unrelated cause. A
+  control I have not tested is not a control.
+- `airlock serve --selftest`, on by default: the fail-closed
+  subset of those cases runs against the loaded policy before the
+  listener opens, and the process exits 3 rather than serving if
+  any of them do not hold.
+- `airlock policy lint`, with a JSON schema for the policy format
+  at `airlock/schema/policy-v1.json`. The invariants that make
+  the control a control are enforced by the loader with or
+  without the optional `schema` extra.
+- `docs/guarantees.md` -- the whole claim, deliberately narrow --
+  and `docs/threat-model.md`, `docs/policy-format.md`,
+  `docs/conformance.md`, `docs/builds.md`, `docs/container.md`,
+  which is the one that says containerising this silently changes
+  what the policy means by local.
+- `airlock.api` as the import surface my other scripts use, plus
+  `py.typed`.
+- Proper packaging: full metadata, extras, a searchable docs
+  build, mypy and coverage in the pipeline, and a Monday schedule
+  that says what has moved instead of opening branches at me.
+- A tag pipeline gated on the suite and the conformance cases,
+  producing the wheel and the image I install from and nothing
+  else. The build carries the commit it was made from; anything
+  run out of a working tree describes itself as a checkout
+  instead of claiming one. `docs/builds.md`.
+
 ## [0.5.0]
 
 ### Added

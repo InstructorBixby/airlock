@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airlock"
-version = "0.5.1"
+version = "0.9.0"
 description = "Policy gateway for model calls: classify, redact, route local or hosted, log everything"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,7 +51,6 @@ dev = [
     "jsonschema>=4.21",
 ]
 docs = ["mkdocs-material>=9.5", "mkdocs>=1.6"]
-
 [project.urls]
 Homepage = "http://git.c01n31.net/c01n31pan1c/airlock"
 Changelog = "http://git.c01n31.net/c01n31pan1c/airlock/-/blob/main/CHANGELOG.md"
@@ -63,8 +62,8 @@ airlock = "airlock.cli:main"
 include = ["airlock*"]
 
 [tool.setuptools.package-data]
-airlock = ["policy/*.yaml", "policy.yaml", "schema/*.json",
-           "conformance/*.yaml", "py.typed"]
+airlock = ["policy.yaml", "schema/*.json", "conformance/*.yaml",
+           "py.typed"]
 
 [tool.ruff]
 line-length = 88
@@ -79,11 +78,11 @@ files = ["airlock"]
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
-# Not strict everywhere yet. The modules that make the decision are
-# checked strictly; the rest is on the list.
+
 [[tool.mypy.overrides]]
 module = ["airlock.classify", "airlock.policy", "airlock.route",
-          "airlock.redact", "airlock.tiers", "airlock.model"]
+          "airlock.redact", "airlock.tiers", "airlock.model",
+          "airlock.conformance"]
 disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
@@ -94,4 +93,5 @@ addopts = "-q"
 source = ["airlock"]
 
 [tool.coverage.report]
+fail_under = 88
 exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
