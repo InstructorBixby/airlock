@@ -13,9 +13,9 @@ import json
 import sys
 from pathlib import Path
 
-from airlock import (__version__, audit, classify, conformance,
+from airlock import (audit, classify, conformance, deprecations,
                      engagement, policy, policylint, prove, route,
-                     scrubmap, selftest, server, spend)
+                     scrubmap, selftest, server, spend, version)
 from airlock.detect import roster as roster_mod
 from airlock.detect import scope as scope_mod
 
@@ -54,8 +54,8 @@ def _assemble(args, *, require_roster=True):
         smap = scrubmap.load(
             eng.map_path, engagement=eng.id,
             key=scrubmap.engagement_key(eng.key_path))
-    elif getattr(args, "map", None):
-        smap = scrubmap.load(args.map)
+    elif getattr(args, "scrubmap", None):
+        smap = scrubmap.load(args.scrubmap)
     return pol, extra, smap, eng
 
 
@@ -210,8 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="airlock",
         description="policy gateway for model calls")
+    # Names the build, not just the release: a stale install on this
+    # machine is the realistic version of "a control that reports
+    # clean while doing nothing".
     p.add_argument("--version", action="version",
-                   version=f"airlock {__version__}")
+                   version=f"airlock {version.describe()}")
     p.add_argument("--policy", default=str(policy.default_path()))
     p.add_argument("--roster", default="roster.yaml")
     p.add_argument("--log", default=str(audit.default_path()))
@@ -223,7 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="run the endpoint")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8111)
-    s.add_argument("--map", help="scrubkit mapping, when not using -e")
+    s.add_argument("--scrubmap",
+                   help="scrubkit mapping, when not using -e")
     s.add_argument("--selftest", action=argparse.BooleanOptionalAction,
                    default=True,
                    help="prove the fail-closed cases hold before "
@@ -235,7 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("file", help="path, or - for stdin")
     c.add_argument("--json", action="store_true")
     c.add_argument("--why", action="store_true")
-    c.add_argument("--map")
+    c.add_argument("--scrubmap")
     c.set_defaults(fn=cmd_check)
 
     w = sub.add_parser("why", help="explain a call from the audit log")
@@ -276,7 +280,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(deprecations.rewrite_argv(argv))
     try:
         return args.fn(args)
     except (policy.PolicyError, roster_mod.RosterError,

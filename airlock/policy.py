@@ -6,7 +6,10 @@ document, not by reading control flow in a request handler.
 
 The loader is strict and unhelpful on purpose. Every validation error
 here is a configuration that would have been fail-open, so there is no
-"warn and continue" path.
+"warn and continue" path. The one exception is a deprecated key, which
+is migrated with a warning rather than rejected -- an engagement's
+policy file from before a rename has to keep loading, because the
+alternative is that I edit it in a hurry on the day I need it.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from airlock import tiers
+from airlock import deprecations, tiers
 from airlock.cost import Price
 
 
@@ -28,7 +31,7 @@ class PolicyError(Exception):
 KNOWN_REQUIREMENTS = {"redacted", "local", "available"}
 
 BACKEND_KEYS = {"kind", "base_url", "api_key_env", "models", "prices",
-                "preserve_model", "timeout"}
+                "preserve_model", "timeout", "default_model"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ class Backend:
     kind: str
     base_url: str
     api_key_env: str | None = None
+    default_model: str = ""
     models: dict = field(default_factory=dict)
     prices: dict = field(default_factory=dict)
     #: when the clients already name a model this backend serves, so
@@ -72,7 +76,7 @@ class Backend:
             return requested
         if requested and requested in self.models:
             return self.models[requested]
-        return self.models.get("default") or requested or ""
+        return self.default_model or requested or ""
 
 
 @dataclass
@@ -107,6 +111,10 @@ def _parse_backends(raw: dict) -> dict:
     for name, body in (raw or {}).items():
         if not isinstance(body, dict):
             raise PolicyError(f"backend {name!r} is not a mapping")
+        try:
+            body = deprecations.migrate_backend(name, body)
+        except ValueError as exc:
+            raise PolicyError(str(exc)) from exc
         missing = {"kind", "base_url"} - set(body)
         if missing:
             raise PolicyError(f"backend {name!r} missing "
@@ -125,6 +133,7 @@ def _parse_backends(raw: dict) -> dict:
         out[name] = Backend(
             name=name, kind=body["kind"], base_url=body["base_url"],
             api_key_env=body.get("api_key_env"),
+            default_model=str(body.get("default_model") or ""),
             models=dict(body.get("models") or {}),
             prices=prices,
             preserve_model=bool(body.get("preserve_model")),
@@ -184,6 +193,8 @@ def loads(text: str, *, source: str = "<string>") -> Policy:
                  backends=backends,
                  limits=dict(raw.get("limits") or {}),
                  source=source,
+                 # The digest is of the file as written, before
+                 # migration, so a record points at the bytes on disk.
                  digest="sha256:" + hashlib.sha256(
                      text.encode("utf-8")).hexdigest())
     _check_invariants(pol)

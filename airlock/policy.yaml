@@ -3,6 +3,10 @@
 # Reading order: a tier maps to a list of candidate routes, tried top
 # to bottom. The first route whose requirements can be satisfied wins.
 # An empty list means refuse.
+#
+# Schema: airlock/schema/policy-v1.json, which the editor picks up
+# from there. `airlock policy lint` checks it, and
+# `airlock conformance` proves it fails closed.
 version: 1
 
 routes:
@@ -31,8 +35,7 @@ backends:
     kind: openai
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
-    models:
-      default: gpt-4o-mini
+    default_model: gpt-4o-mini
     # Dollars per million tokens. Omit a model and its calls are
     # recorded with no cost, not with a cost of zero.
     prices:
@@ -45,8 +48,7 @@ backends:
     # The local tools name the model directly, so leave the field
     # alone and forward the original bytes. See docs/caching.md.
     preserve_model: true
-    models:
-      default: qwen2.5-14b-instruct
+    default_model: qwen2.5-14b-instruct
     prices:
       default: {prompt: 0.0, completion: 0.0}
     timeout: 600
