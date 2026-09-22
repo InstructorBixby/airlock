@@ -36,6 +36,7 @@ nav:
       - Conformance and selftest: conformance.md
       - Coverage: coverage.md
       - Which build is serving: builds.md
+      - Stability: stability.md
   - How it works:
       - Redaction round trip: redaction.md
       - Streaming: streaming.md
