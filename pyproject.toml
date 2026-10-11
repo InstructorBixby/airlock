@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airlock"
-version = "0.9.0"
+version = "1.0.0"
 description = "Policy gateway for model calls: classify, redact, route local or hosted, log everything"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{name = "c01n31pan1c", email = "panic@c01n31.net"}]
 keywords = ["llm", "policy", "redaction", "compliance", "gateway",
             "data-loss-prevention"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
@@ -93,5 +93,5 @@ addopts = "-q"
 source = ["airlock"]
 
 [tool.coverage.report]
-fail_under = 88
+fail_under = 90
 exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]

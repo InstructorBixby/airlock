@@ -2,6 +2,29 @@
 
 Keep a Changelog format, semver versions.
 
+## [1.0.0]
+
+### Added
+- A stability policy (`docs/stability.md`). Three surfaces are
+  covered: the policy file format, the command line including
+  exit codes, and `airlock.api`. Everything else is internal.
+  Detector behaviour is deliberately not covered, but its
+  direction is: a patch release never makes the classifier
+  quieter.
+- Deprecation shims with a stated removal release, warning once
+  per process and never silently ignoring a renamed key.
+- A README that states the guarantee, the limits, and why none of
+  the existing things did this.
+
+### Changed
+- `airlock --version` names the build, not just the release: the
+  commit for a tag build, `(checkout)` for anything run out of a
+  working tree.
+- `--map` is now `--scrubmap`. The old spelling works until 2.0.
+- A backend's default model is `default_model`; the old
+  `models.default` works until 2.0, and setting both to different
+  values is an error rather than a silent preference.
+
 ## [0.9.0]
 
 ### Added
