@@ -9,8 +9,10 @@ def pol(tmp_path, body=None):
 
 
 def test_the_shipped_cases_pass_against_the_shipped_policy(tmp_path):
-    report = conformance.run(pol(tmp_path), log_path=tmp_path / "c.jsonl")
+    report = conformance.run(pol(tmp_path),
+                             log_path=tmp_path / "c.jsonl")
     assert report.failed == 0, report.text()
+    assert report.skipped == 0
 
 
 def test_every_case_declares_why_it_exists():
@@ -25,10 +27,6 @@ def test_refusal_cases_pin_the_reason():
 
 
 def test_a_fail_open_policy_is_caught(tmp_path):
-    # A policy that routes internal material straight to hosted with no
-    # redaction requirement. The loader permits it -- internal is
-    # allowed out -- but the conformance cases that expect local for a
-    # credential now fail, which is the point.
     body = GOOD.replace("    - backend: hosted\n      require: [redacted]",
                         "    - backend: hosted")
     report = conformance.run(pol(tmp_path, body),
@@ -44,6 +42,18 @@ def test_a_case_cannot_pass_for_the_wrong_reason(tmp_path):
                              log_path=tmp_path / "c.jsonl")
     assert report.failed == 1
     assert "wrong reason" in report.outcomes[0].detail
+
+
+def test_local_cases_are_vacuous_without_a_hosted_backend(tmp_path):
+    # Local-only policy: every "must stay local" case is trivially
+    # satisfied and proves nothing, so it must not read as a pass.
+    body = GOOD.replace("https://api.example/v1",
+                        "http://127.0.0.1:9000/v1")
+    report = conformance.run(pol(tmp_path, body),
+                             log_path=tmp_path / "c.jsonl")
+    assert report.skipped > 0
+    assert report.failed == 0
+    assert "not a passing case" in report.text()
 
 
 def test_report_says_not_to_serve_on_failure(tmp_path):

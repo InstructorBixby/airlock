@@ -13,11 +13,15 @@ No case asserts a tier -- that would be testing my detectors against
 my own regexes. Each one asserts something about the *behaviour*:
 refused, or routed to a local backend, or never reaching a socket.
 
-The cases that matter most are the fail-closed ones. A case whose
-expectation is `refused` and which passes vacuously -- because the
-request errored for an unrelated reason -- would be worse than no case,
-so each records the refusal reason it expects to see and the runner
-checks it.
+Two ways a case can lie, both handled:
+
+1. **Passing for the wrong reason.** A refusal case records the reason
+   it expects to see, and the runner checks the message contains it.
+2. **Passing vacuously.** A `local` case against a policy with no
+   hosted backend at all proves nothing -- there was nowhere else for
+   the request to go. Those cases are reported as `n/a`, not as passes,
+   and the report says how many were skipped so a wall of green cannot
+   be mistaken for a wall of proof.
 """
 from __future__ import annotations
 
@@ -43,8 +47,6 @@ class Case:
     body: dict
     #: "refused" | "local" | "any"
     expect: str = "refused"
-    #: substring expected in the refusal, so a case cannot pass by
-    #: failing for the wrong reason
     because: str = ""
     raw: str | None = None
 
@@ -59,10 +61,13 @@ class Outcome:
     case: Case
     ok: bool
     detail: str = ""
+    #: the case could not say anything about this policy
+    vacuous: bool = False
 
     def line(self) -> str:
-        return (f"{'pass' if self.ok else 'FAIL'}  {self.case.id:34} "
-                f"{self.detail}")
+        mark = "n/a " if self.vacuous else ("pass" if self.ok
+                                            else "FAIL")
+        return f"{mark}  {self.case.id:34} {self.detail}"
 
 
 @dataclass
@@ -71,12 +76,25 @@ class Report:
 
     @property
     def failed(self) -> int:
-        return sum(1 for o in self.outcomes if not o.ok)
+        return sum(1 for o in self.outcomes
+                   if not o.ok and not o.vacuous)
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for o in self.outcomes if o.vacuous)
 
     def text(self) -> str:
         lines = [o.line() for o in self.outcomes]
-        lines.append(f"{len(self.outcomes)} case(s), "
-                     f"{self.failed} failed")
+        tail = (f"{len(self.outcomes)} case(s), "
+                f"{self.failed} failed")
+        if self.skipped:
+            tail += (f", {self.skipped} said nothing about this "
+                     f"policy")
+        lines.append(tail)
+        if self.skipped and not self.failed:
+            lines.append("a skipped case is not a passing case; this "
+                         "policy has no hosted backend for those "
+                         "cases to prove anything against")
         if self.failed:
             lines.append("a failure here means the loaded policy does "
                          "not fail closed; do not serve with it")
@@ -103,8 +121,14 @@ def run(pol: policy.Policy, cases=None, *, detectors=(),
         log_path=None) -> Report:
     cases = cases or load_cases()
     local = {n for n, be in pol.backends.items() if be.is_local}
+    hosted = set(pol.backends) - local
     report = Report()
     for case in cases:
+        if case.expect == "local" and not hosted:
+            report.outcomes.append(Outcome(
+                case, True, "policy declares no hosted backend",
+                vacuous=True))
+            continue
         report.outcomes.append(
             _run_one(pol, case, local, detectors, log_path))
     return report
@@ -131,13 +155,12 @@ def _run_one(pol, case, local, detectors, log_path) -> Outcome:
                                        case.payload())
         except NoSocket as exc:
             return Outcome(case, False,
-                           f"request reached non-local backend "
-                           f"{exc!s}")
+                           f"request reached non-local backend {exc!s}")
         message = (obj.get("error") or {}).get("message", "")
         if case.expect == "refused":
             if status == 200:
-                return Outcome(case, False,
-                               f"allowed via {reached[0] if reached else '?'}")
+                where = reached[0] if reached else "?"
+                return Outcome(case, False, f"allowed via {where}")
             if case.because and case.because not in message:
                 return Outcome(case, False,
                                f"refused for the wrong reason: "
@@ -161,4 +184,4 @@ def _scratch() -> Path:
     return Path(tempfile.mkdtemp(prefix="airlock-conf.")) / "calls.jsonl"
 
 
-__all__ = ["Case", "Report", "load_cases", "run", "tiers"]
+__all__ = ["Case", "Outcome", "Report", "load_cases", "run", "tiers"]
