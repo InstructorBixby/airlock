@@ -2,6 +2,16 @@
 
 Keep a Changelog format, semver versions.
 
+## [1.0.1]
+
+### Fixed
+- A conformance case expecting a request to stay local passed
+  vacuously against a policy with no hosted backend: there was
+  nowhere else for the request to go, so the case proved nothing
+  and reported green. Those cases are now reported as `n/a` and
+  counted separately, and the report says plainly that a skipped
+  case is not a passing case.
+
 ## [1.0.0]
 
 ### Added
